@@ -78,6 +78,20 @@ class PostJobRequest(BaseModel):
     usdc_amount:     float
     timeout_seconds: int = 3600
 
+# ── Wallet ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/wallet")
+async def get_wallet():
+    addr = os.getenv("CIRCLE_WALLET_ADDRESS", "")
+    balance_usdc = 0.0
+    if client and addr:
+        try:
+            bal_wei = client.w3.eth.get_balance(client.w3.to_checksum_address(addr))
+            balance_usdc = round(bal_wei / 10**18, 4)
+        except Exception:
+            pass
+    return {"address": addr, "balance_usdc": balance_usdc, "network": "arc-testnet", "type": "SCA"}
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")

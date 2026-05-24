@@ -1,9 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import ArcDashboard from './ArcDashboard'
+import './index.css'
+import App from './App'
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ArcDashboard />
-  </StrictMode>,
+  <StrictMode><App /></StrictMode>
 )
