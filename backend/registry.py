@@ -17,8 +17,11 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Optional
+
+REGISTRY_FILE = Path(__file__).parent.parent / "agent_registry.json"
 
 
 # ── Agent Card (ERC-8004 inspired) ────────────────────────────────────────────
@@ -114,6 +117,7 @@ class AgentRegistry:
             registered_at = int(time.time()),
         )
         self._cards[agent_id] = card
+        self.save()
         return card
 
     # ── Discovery (Pillar A: ACP) ─────────────────────────────────────────────
@@ -141,6 +145,7 @@ class AgentRegistry:
             card.reputation = compute_reputation(
                 card.jobs_completed, card.jobs_slashed, card.jobs_total
             )
+            self.save()
 
     def record_slash(self, agent_id: str):
         if card := self._cards.get(agent_id):
@@ -149,16 +154,33 @@ class AgentRegistry:
             card.reputation = compute_reputation(
                 card.jobs_completed, card.jobs_slashed, card.jobs_total
             )
+            self.save()
 
     def record_job(self, agent_id: str):
-        """Called when a job is posted to this agent (increments total without settling)."""
         if card := self._cards.get(agent_id):
             card.jobs_total += 1
             card.reputation = compute_reputation(
                 card.jobs_completed, card.jobs_slashed, card.jobs_total
             )
+            self.save()
 
-    # ── Serialisation ─────────────────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────────────────────
+
+    def save(self):
+        """Write registry to disk so agent cards survive restarts."""
+        data = {aid: asdict(card) for aid, card in self._cards.items()}
+        REGISTRY_FILE.write_text(json.dumps(data, indent=2))
+
+    def load(self):
+        """Restore registry from disk if it exists."""
+        if not REGISTRY_FILE.exists():
+            return
+        try:
+            data = json.loads(REGISTRY_FILE.read_text())
+            for aid, d in data.items():
+                self._cards[aid] = AgentCard(**d)
+        except Exception:
+            pass  # corrupt file — start fresh
 
     def to_dict(self) -> list[dict]:
         return [asdict(c) for c in self.all()]
@@ -167,3 +189,4 @@ class AgentRegistry:
 # ── Global singleton ──────────────────────────────────────────────────────────
 
 registry = AgentRegistry()
+registry.load()   # restore cards from previous session on import

@@ -14,6 +14,7 @@ Run:
     python3 -m backend.agent slash     # adversarial SLA breach demo
 """
 import asyncio
+import hashlib
 import os
 import sys
 import time
@@ -28,6 +29,15 @@ from backend.brewing_sdk    import BrewingArcClient, paced_api_call
 from backend.registry       import registry, AgentCard
 from backend.circle_wallets import provision_agent_wallet
 from backend.receipts       import sign_receipt, receipt_store
+
+
+def prompt_to_ipfs_hash(prompt: str) -> bytes:
+    """
+    Deterministic bytes32 from a job prompt.
+    sha256(prompt) → 32 bytes stored on-chain as ipfs_spec_hash.
+    Anyone with the prompt can verify it matches the on-chain hash.
+    """
+    return hashlib.sha256(prompt.encode()).digest()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -159,12 +169,15 @@ async def run_demo():
             f"{worker_card.jobs_completed} completed)")
 
         # ── Pillar B: AgentVaults — lock USDC in escrow ───────────────────────
+        ipfs_hash = prompt_to_ipfs_hash(job_spec["prompt"])
         log(f"  Posting job to escrow ({JOB_AMOUNT} USDC, {SLA_TIMEOUT}s SLA)…")
+        log(f"  spec_hash: {ipfs_hash.hex()[:16]}…  (sha256 of prompt, stored on-chain)")
         try:
             result    = await arc.post_job(
                 worker          = worker_card.payment_addr,
                 usdc_amount     = JOB_AMOUNT,
                 timeout_seconds = SLA_TIMEOUT,
+                ipfs_hash       = ipfs_hash,
             )
             job_id    = result["job_id"]
             create_tx = result["create_tx"]
