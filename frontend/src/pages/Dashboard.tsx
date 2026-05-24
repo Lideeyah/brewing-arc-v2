@@ -6,6 +6,16 @@ const EXPLORER = 'https://testnet.arcscan.app'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface SubTask {
+  agent_name:  string
+  description: string
+  status:      string   // locking | working | completed
+  job_id:      number | null
+  create_tx:   string | null
+  settle_tx:   string | null
+  result:      string | null
+}
+
 interface TaskRecord {
   task_id:          string
   employer_address: string
@@ -14,12 +24,8 @@ interface TaskRecord {
   budget_usdc:      number
   deadline_hours:   number
   status:           string   // pending | in_progress | completed | refunded
-  agent_name:       string | null
   result:           string | null
-  job_id:           number | null
-  create_tx:        string | null
-  settle_tx:        string | null
-  receipt_id:       string | null
+  subtasks:         SubTask[]
   created_at:       number
   completed_at:     number | null
 }
@@ -186,33 +192,36 @@ function PostTaskTab({ onTaskPosted }: { onTaskPosted: () => void }) {
 
       {/* Confirmation */}
       {result && result.status === 'completed' && (
-        <div className="border border-arc-green/20 rounded-xl bg-arc-green/5 p-5 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-arc-green text-sm">✓</span>
-              <span className="font-mono text-xs font-semibold text-arc-green">Task completed by {result.agent_name}</span>
+        <div className="flex flex-col gap-4">
+          <div className="border border-arc-green/20 rounded-xl bg-arc-green/5 p-5 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-arc-green text-sm">✓</span>
+                <span className="font-mono text-xs font-semibold text-arc-green">3-agent pipeline complete · {result.budget_usdc.toFixed(3)} USDC settled</span>
+              </div>
+              <StatusBadge status={result.status} />
             </div>
-            <StatusBadge status={result.status} />
+            <div className="font-mono text-[11px] text-white leading-relaxed bg-black/40 rounded-lg p-4 border border-arc-border">
+              {result.result}
+            </div>
           </div>
-          <div className="font-mono text-[11px] text-white leading-relaxed bg-black/40 rounded-lg p-4 border border-arc-border">
-            {result.result}
-          </div>
-          <div className="flex flex-wrap gap-4 font-mono text-[10px] text-arc-muted border-t border-arc-green/10 pt-3">
-            <span>{result.budget_usdc.toFixed(3)} USDC settled</span>
-            {result.create_tx && (
-              <a href={`${EXPLORER}/tx/${result.create_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
-                Escrow TX ↗
-              </a>
-            )}
-            {result.settle_tx && (
-              <a href={`${EXPLORER}/tx/${result.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
-                Settlement TX ↗
-              </a>
-            )}
-            {result.receipt_id && (
-              <span>Receipt #{result.receipt_id.slice(0, 10)}…</span>
-            )}
-          </div>
+          {result.subtasks.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">AGENT BREAKDOWN</div>
+              {result.subtasks.map(st => (
+                <div key={st.agent_name} className="border border-arc-border rounded-lg bg-arc-surface p-4 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] font-semibold text-white">{st.agent_name}</span>
+                    <div className="flex items-center gap-3 font-mono text-[10px] text-arc-muted">
+                      {st.create_tx && <a href={`${EXPLORER}/tx/${st.create_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Escrow ↗</a>}
+                      {st.settle_tx && <a href={`${EXPLORER}/tx/${st.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Settlement ↗</a>}
+                    </div>
+                  </div>
+                  <p className="font-mono text-[10px] text-arc-sub leading-relaxed">{st.result}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -288,10 +297,33 @@ function ActiveJobsTab() {
               )}
             </div>
 
-            {/* Result */}
+            {/* Sub-tasks */}
+            {task.subtasks.length > 0 && (
+              <div className="flex flex-col gap-2 mt-1">
+                <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">AGENT PIPELINE</div>
+                {task.subtasks.map(st => (
+                  <div key={st.agent_name} className="border border-arc-border rounded-lg bg-black/40 p-3 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-mono text-[10px] ${st.status === 'completed' ? 'text-arc-green' : st.status === 'working' ? 'text-arc-amber' : 'text-arc-muted'}`}>
+                          {st.status === 'completed' ? '✓' : st.status === 'working' ? '⟳' : '○'}
+                        </span>
+                        <span className="font-mono text-[11px] font-semibold text-white">{st.agent_name}</span>
+                      </div>
+                      <div className="flex gap-3 font-mono text-[10px]">
+                        {st.create_tx && <a href={`${EXPLORER}/tx/${st.create_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Escrow ↗</a>}
+                        {st.settle_tx && <a href={`${EXPLORER}/tx/${st.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Settlement ↗</a>}
+                      </div>
+                    </div>
+                    {st.result && <p className="font-mono text-[10px] text-arc-sub leading-relaxed">{st.result}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Final combined result */}
             {task.result && (
-              <div className="border border-arc-border rounded-lg p-4 bg-black/40 mt-1">
-                <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase mb-2">AGENT RESULT</div>
+              <div className="border border-arc-green/20 rounded-lg p-4 bg-arc-green/5 mt-1">
+                <div className="font-mono text-[9px] text-arc-green tracking-widest uppercase mb-2">COMBINED RESULT</div>
                 <p className="font-mono text-[11px] text-white leading-relaxed">{task.result}</p>
               </div>
             )}
@@ -322,12 +354,13 @@ function ReceiptsTab() {
       `═══════════════════════════════`,
       `Task ID:      ${task.task_id}`,
       `Receipt ID:   ${task.receipt_id ?? '—'}`,
-      `Agent:        ${task.agent_name ?? '—'}`,
+      `Agents:       ${task.subtasks.length > 0 ? task.subtasks.map(s => s.agent_name).join(', ') : '—'}`,
       `Description:  ${task.description}`,
       `USDC Paid:    ${task.budget_usdc.toFixed(3)}`,
       `Completed:    ${task.completed_at ? new Date(task.completed_at * 1000).toISOString() : '—'}`,
-      `Escrow TX:    ${task.create_tx ? `${EXPLORER}/tx/${task.create_tx}` : '—'}`,
-      `Settlement TX: ${task.settle_tx ? `${EXPLORER}/tx/${task.settle_tx}` : '—'}`,
+      ...task.subtasks.map(st =>
+        `${st.agent_name}: escrow=${st.create_tx ? `${EXPLORER}/tx/${st.create_tx}` : '—'} settle=${st.settle_tx ? `${EXPLORER}/tx/${st.settle_tx}` : '—'}`
+      ),
       ``,
       `RESULT`,
       `───────`,
@@ -357,7 +390,9 @@ function ReceiptsTab() {
           <div className="border-b border-arc-border px-5 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className="text-arc-green text-xs">✓</span>
-              <span className="font-mono text-[11px] text-white">{task.agent_name}</span>
+              <span className="font-mono text-[11px] text-white">
+                {task.subtasks.length > 0 ? task.subtasks.map(s => s.agent_name).join(' · ') : 'Agent'}
+              </span>
               <span className="font-mono text-[10px] text-arc-muted">#{task.task_id}</span>
             </div>
             <div className="flex items-center gap-3">
@@ -374,9 +409,9 @@ function ReceiptsTab() {
             <p className="font-mono text-[11px] text-arc-sub">{task.description}</p>
             <div className="flex flex-wrap gap-4 font-mono text-[10px] text-arc-muted">
               {task.completed_at && <span>{new Date(task.completed_at * 1000).toLocaleString()}</span>}
-              {task.receipt_id   && <span>Receipt #{task.receipt_id.slice(0, 16)}…</span>}
-              {task.settle_tx    && (
-                <a href={`${EXPLORER}/tx/${task.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
+              <span>{task.subtasks.filter(s => s.status === 'completed').length}/{task.subtasks.length} agents settled</span>
+              {task.subtasks.find(s => s.settle_tx) && (
+                <a href={`${EXPLORER}/tx/${task.subtasks.find(s => s.settle_tx)!.settle_tx!}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
                   On-chain proof ↗
                 </a>
               )}

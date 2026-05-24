@@ -19,14 +19,9 @@ class TaskRecord:
     budget_usdc:      float
     deadline_hours:   int
     status:           str           # pending | in_progress | completed | refunded
-    agent_name:       Optional[str] = None
-    agent_id:         Optional[str] = None
     result:           Optional[str] = None
-    job_id:           Optional[int] = None
-    create_tx:        Optional[str] = None
-    settle_tx:        Optional[str] = None
-    receipt_id:       Optional[str] = None
-    created_at:       int = field(default_factory=lambda: int(time.time()))
+    subtasks:         list          = field(default_factory=list)  # list of SubTask dicts
+    created_at:       int           = field(default_factory=lambda: int(time.time()))
     completed_at:     Optional[int] = None
 
 

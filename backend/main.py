@@ -43,9 +43,9 @@ async def lifespan(app: FastAPI):
 def _seed_registry():
     import hashlib
     specs = [
-        ("ResearchBot",  ["research", "market-analysis", "literature-review", "summarization"]),
-        ("AnalystBot",   ["analysis", "data", "financial", "risk-assessment", "comparison"]),
-        ("StrategyBot",  ["strategy", "planning", "recommendations", "decision-support"]),
+        ("ResearchBot", ["research", "market-analysis", "literature-review", "summarization"]),
+        ("AnalystBot",  ["analysis", "data", "financial", "risk-assessment", "comparison"]),
+        ("WriterBot",   ["writing", "content", "synthesis", "communication", "reporting"]),
     ]
     owner = client.account.address
     for name, caps in specs:
@@ -133,14 +133,16 @@ async def onboard(req: OnboardRequest):
 @app.post("/api/tasks")
 async def post_task(req: PostTaskRequest):
     """
-    Full autonomous loop:
-    Claude selects agent → lock USDC in escrow → agent runs task → settle → receipt.
+    Multi-agent pipeline:
+    Planner breaks task into 3 sub-tasks → ResearchBot, AnalystBot, WriterBot each get
+    their own escrow + settlement → synthesizer combines outputs into final result.
     """
     import anthropic as _anthropic
+    import json as _json
+    import re as _re
 
     employer_addr = req.employer_address or client.account.address
 
-    # Create task record immediately
     task = task_store.create(
         employer_address = employer_addr,
         employer_name    = req.employer_name,
@@ -155,81 +157,142 @@ async def post_task(req: PostTaskRequest):
         ai   = _anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
         loop = asyncio.get_running_loop()
 
-        # 1. Claude selects the best agent for this task
-        agents     = registry.all()
-        agent_list = "\n".join(
-            [f"- {a.name}: {', '.join(a.capabilities[:4])}" for a in agents]
-        )
-        sel = await loop.run_in_executor(None, lambda: ai.messages.create(
+        # ── Locate the three named agents ─────────────────────────────────────
+        by_name     = {a.name: a for a in registry.all()}
+        research_bot = by_name.get("ResearchBot")
+        analyst_bot  = by_name.get("AnalystBot")
+        writer_bot   = by_name.get("WriterBot")
+
+        if not all([research_bot, analyst_bot, writer_bot]):
+            missing = [n for n, a in [("ResearchBot", research_bot), ("AnalystBot", analyst_bot), ("WriterBot", writer_bot)] if not a]
+            raise ValueError(f"Required agents not in registry: {missing}")
+
+        # ── Step 1: Planner breaks task into 3 sub-tasks ─────────────────────
+        plan_resp = await loop.run_in_executor(None, lambda: ai.messages.create(
             model      = "claude-haiku-4-5-20251001",
-            max_tokens = 20,
+            max_tokens = 500,
             messages   = [{
                 "role":    "user",
                 "content": (
+                    f"You are a task planner. Break this client task into 3 focused sub-tasks.\n\n"
                     f"Task: {req.description}\n\n"
-                    f"Agents:\n{agent_list}\n\n"
-                    "Reply with ONLY the agent name that best fits. No explanation."
+                    "Return JSON only — no extra text:\n"
+                    '{"research": "sub-task for ResearchBot: gather facts, context, background", '
+                    '"analysis": "sub-task for AnalystBot: analyse data, draw insights, compare", '
+                    '"writing": "sub-task for WriterBot: synthesise and write the final client-ready output"}'
                 ),
             }],
         ))
-        chosen_name = sel.content[0].text.strip()
-        chosen      = next(
-            (a for a in agents if a.name.lower() in chosen_name.lower() or chosen_name.lower() in a.name.lower()),
-            agents[0],
-        )
-        task.agent_name = chosen.name
-        task.agent_id   = chosen.agent_id
-        task_store.update(task)
+        raw_plan = plan_resp.content[0].text.strip()
+        m        = _re.search(r'\{.*\}', raw_plan, _re.DOTALL)
+        try:
+            plan = _json.loads(m.group()) if m else {}
+        except Exception:
+            plan = {}
 
-        # 2. Lock USDC in escrow
-        escrow_result = await client.post_job(
-            worker          = chosen.payment_addr,
-            usdc_amount     = req.budget_usdc,
-            timeout_seconds = req.deadline_hours * 3600,
-        )
-        task.job_id    = escrow_result["job_id"]
-        task.create_tx = escrow_result["create_tx"]
-        task_store.update(task)
+        sub_descriptions = {
+            "ResearchBot": plan.get("research") or f"Research background, facts and context for: {req.description}",
+            "AnalystBot":  plan.get("analysis") or f"Analyse key data, trends and insights for: {req.description}",
+            "WriterBot":   plan.get("writing")  or f"Write a clear, professional summary report for: {req.description}",
+        }
 
-        # 3. Agent runs the task
-        work = await loop.run_in_executor(None, lambda: ai.messages.create(
+        # ── Steps 2–4: Each agent gets its own escrow, runs, settles ─────────
+        sub_budget   = round(req.budget_usdc / 3, 6)
+        employer_key = os.getenv("ARC_PRIVATE_KEY", "")
+        pipeline     = [
+            (research_bot, "research"),
+            (analyst_bot,  "analysis"),
+            (writer_bot,   "writing"),
+        ]
+        task.subtasks = []
+        agent_outputs: dict[str, str] = {}
+
+        for agent, task_type in pipeline:
+            sub_desc = sub_descriptions[agent.name]
+
+            sub = {
+                "agent_name":  agent.name,
+                "description": sub_desc,
+                "status":      "locking",
+                "job_id":      None,
+                "create_tx":   None,
+                "settle_tx":   None,
+                "result":      None,
+            }
+            task.subtasks.append(sub)
+            task_store.update(task)
+
+            # Lock escrow for this sub-task
+            escrow = await client.post_job(
+                worker          = agent.payment_addr,
+                usdc_amount     = sub_budget,
+                timeout_seconds = req.deadline_hours * 3600,
+            )
+            sub["job_id"]    = escrow["job_id"]
+            sub["create_tx"] = escrow["create_tx"]
+            sub["status"]    = "working"
+            task_store.update(task)
+
+            # Agent runs its sub-task
+            work = await loop.run_in_executor(None, lambda d=sub_desc, n=agent.name: ai.messages.create(
+                model      = "claude-opus-4-5",
+                max_tokens = 400,
+                messages   = [{
+                    "role":    "user",
+                    "content": (
+                        f"You are {n}, a specialized AI agent. "
+                        f"Complete this sub-task professionally:\n\n{d}"
+                    ),
+                }],
+            ))
+            output                = work.content[0].text.strip()
+            sub["result"]         = output
+            agent_outputs[n]      = output
+            task_store.update(task)
+
+            # Settle escrow → USDC released to agent
+            settle_tx        = await client.complete_job(sub["job_id"])
+            sub["settle_tx"] = settle_tx
+            sub["status"]    = "completed"
+            task_store.update(task)
+
+            # Sign receipt for this sub-task
+            if employer_key:
+                receipt = sign_receipt(
+                    job_id          = sub["job_id"],
+                    employer_addr   = client.account.address,
+                    employer_key    = employer_key,
+                    worker_addr     = agent.payment_addr,
+                    worker_agent_id = agent.agent_id,
+                    task_type       = task_type,
+                    output_text     = output,
+                    amount_usdc     = sub_budget,
+                    tx_hash         = settle_tx,
+                )
+                receipt_store.save(receipt)
+
+            registry.record_completion(agent.agent_id)
+
+        # ── Step 5: Synthesizer combines all three outputs ────────────────────
+        combined = "\n\n".join(
+            f"[{name}]\n{out}" for name, out in agent_outputs.items()
+        )
+        synth = await loop.run_in_executor(None, lambda: ai.messages.create(
             model      = "claude-opus-4-5",
-            max_tokens = 600,
+            max_tokens = 700,
             messages   = [{
                 "role":    "user",
                 "content": (
-                    f"You are {chosen.name}, a specialized AI agent. "
-                    f"Complete this task for a client:\n\n{req.description}\n\n"
-                    "Provide a clear, professional response."
+                    f"Three specialist agents have completed sub-tasks for a client. "
+                    f"Synthesize their outputs into one coherent, professional response.\n\n"
+                    f"Original client task: {req.description}\n\n"
+                    f"{combined}\n\n"
+                    "Write the final unified response now:"
                 ),
             }],
         ))
-        output      = work.content[0].text.strip()
-        task.result = output
-        task_store.update(task)
 
-        # 4. Release USDC to agent wallet
-        settle_tx      = await client.complete_job(task.job_id)
-        task.settle_tx = settle_tx
-
-        # 5. Sign on-chain receipt
-        employer_key = os.getenv("ARC_PRIVATE_KEY", "")
-        if employer_key:
-            receipt = sign_receipt(
-                job_id          = task.job_id,
-                employer_addr   = client.account.address,
-                employer_key    = employer_key,
-                worker_addr     = chosen.payment_addr,
-                worker_agent_id = chosen.agent_id,
-                task_type       = chosen.capabilities[0] if chosen.capabilities else "general",
-                output_text     = output,
-                amount_usdc     = req.budget_usdc,
-                tx_hash         = settle_tx,
-            )
-            receipt_store.save(receipt)
-            task.receipt_id = receipt.receipt_id
-
-        registry.record_completion(chosen.agent_id)
+        task.result       = synth.content[0].text.strip()
         task.status       = "completed"
         task.completed_at = int(time.time())
         task_store.update(task)
