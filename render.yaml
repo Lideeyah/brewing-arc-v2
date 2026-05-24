@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: brewing-arc-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ARC_RPC_URL
+        sync: false
+      - key: ARC_PRIVATE_KEY
+        sync: false
+      - key: ESCROW_CONTRACT_ADDRESS
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CIRCLE_API_KEY
+        sync: false
+      - key: CIRCLE_ENTITY_SECRET
+        sync: false
+      - key: CIRCLE_WALLET_SET_ID
+        sync: false
+      - key: CIRCLE_WALLET_ID
+        sync: false
+      - key: CIRCLE_WALLET_ADDRESS
+        sync: false
+      - key: USDC_ADDRESS
+        value: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
