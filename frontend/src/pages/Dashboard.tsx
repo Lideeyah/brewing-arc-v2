@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import DriveFilePicker, { type DriveFilePayload } from '../components/DriveFilePicker'
 
 const API      = import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'
 const EXPLORER = 'https://testnet.arcscan.app'
@@ -78,12 +79,13 @@ function Countdown({ createdAt, deadlineHours }: { createdAt: number; deadlineHo
 // ── Tab 1: Post a Task ────────────────────────────────────────────────────────
 
 function PostTaskTab({ onTaskPosted }: { onTaskPosted: () => void }) {
-  const [desc, setDesc]         = useState('')
-  const [budget, setBudget]     = useState('0.10')
-  const [deadline, setDeadline] = useState('24')
-  const [submitting, setSub]    = useState(false)
-  const [result, setResult]     = useState<TaskRecord | null>(null)
-  const [error, setError]       = useState('')
+  const [desc, setDesc]           = useState('')
+  const [budget, setBudget]       = useState('0.10')
+  const [deadline, setDeadline]   = useState('24')
+  const [submitting, setSub]      = useState(false)
+  const [result, setResult]       = useState<TaskRecord | null>(null)
+  const [error, setError]         = useState('')
+  const [driveFiles, setDriveFiles] = useState<DriveFilePayload[]>([])
 
   const employerAddress = localStorage.getItem('brewing_employer_address') || ''
   const employerName    = localStorage.getItem('brewing_employer_name') || ''
@@ -103,8 +105,9 @@ function PostTaskTab({ onTaskPosted }: { onTaskPosted: () => void }) {
           deadline_hours:   parseInt(deadline) || 24,
           employer_address: employerAddress,
           employer_name:    employerName,
+          drive_files:      driveFiles,
         }),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(180_000),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -139,6 +142,14 @@ function PostTaskTab({ onTaskPosted }: { onTaskPosted: () => void }) {
             required
             className="bg-arc-surface border border-arc-border rounded-lg px-4 py-3 font-mono text-sm text-white placeholder-arc-muted focus:outline-none focus:border-arc-green transition-colors resize-none"
           />
+        </div>
+
+        {/* Google Drive attachment */}
+        <div className="flex flex-col gap-1.5">
+          <label className="font-mono text-[10px] text-arc-muted tracking-widest uppercase">
+            Attach Files <span className="text-arc-muted normal-case tracking-normal">(optional — agents will analyze selected Drive files)</span>
+          </label>
+          <DriveFilePicker onFilesChange={setDriveFiles} />
         </div>
 
         <div className="grid grid-cols-2 gap-4">

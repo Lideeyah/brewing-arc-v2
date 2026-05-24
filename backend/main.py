@@ -83,6 +83,7 @@ class PostTaskRequest(BaseModel):
     deadline_hours:   int   = 24
     employer_address: str   = ""
     employer_name:    str   = ""
+    drive_files:      list  = []  # [{name: str, content: str}]
 
 class PostJobRequest(BaseModel):
     worker:          str
@@ -167,15 +168,31 @@ async def post_task(req: PostTaskRequest):
             missing = [n for n, a in [("ResearchBot", research_bot), ("AnalystBot", analyst_bot), ("WriterBot", writer_bot)] if not a]
             raise ValueError(f"Required agents not in registry: {missing}")
 
+        # ── Build Drive file context (injected into every agent prompt) ─────
+        file_context = ""
+        if req.drive_files:
+            sections = [
+                f"=== {f['name']} ===\n{f['content']}"
+                for f in req.drive_files
+                if f.get("name") and f.get("content")
+            ]
+            if sections:
+                file_context = (
+                    "\n\nATTACHED BUSINESS FILES FROM GOOGLE DRIVE "
+                    f"({len(sections)} file{'s' if len(sections) != 1 else ''}):\n\n"
+                    + "\n\n".join(sections)
+                )
+
         # ── Step 1: Planner breaks task into 3 sub-tasks ─────────────────────
         plan_resp = await loop.run_in_executor(None, lambda: ai.messages.create(
             model      = "claude-haiku-4-5-20251001",
-            max_tokens = 500,
+            max_tokens = 600,
             messages   = [{
                 "role":    "user",
                 "content": (
                     f"You are a task planner. Break this client task into 3 focused sub-tasks.\n\n"
-                    f"Task: {req.description}\n\n"
+                    f"Task: {req.description}"
+                    f"{file_context}\n\n"
                     "Return JSON only — no extra text:\n"
                     '{"research": "sub-task for ResearchBot: gather facts, context, background", '
                     '"analysis": "sub-task for AnalystBot: analyse data, draw insights, compare", '
@@ -233,21 +250,23 @@ async def post_task(req: PostTaskRequest):
             sub["status"]    = "working"
             task_store.update(task)
 
-            # Agent runs its sub-task
-            work = await loop.run_in_executor(None, lambda d=sub_desc, n=agent.name: ai.messages.create(
+            # Agent runs its sub-task (with access to Drive file contents)
+            agent_name_cap = agent.name
+            work = await loop.run_in_executor(None, lambda d=sub_desc, n=agent_name_cap: ai.messages.create(
                 model      = "claude-opus-4-5",
-                max_tokens = 400,
+                max_tokens = 500,
                 messages   = [{
                     "role":    "user",
                     "content": (
                         f"You are {n}, a specialized AI agent. "
                         f"Complete this sub-task professionally:\n\n{d}"
+                        f"{file_context}"
                     ),
                 }],
             ))
-            output                = work.content[0].text.strip()
-            sub["result"]         = output
-            agent_outputs[n]      = output
+            output                      = work.content[0].text.strip()
+            sub["result"]               = output
+            agent_outputs[agent.name]   = output
             task_store.update(task)
 
             # Settle escrow → USDC released to agent
