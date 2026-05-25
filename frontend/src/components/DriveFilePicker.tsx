@@ -122,10 +122,12 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
     setError(null)
     try {
       const params = new URLSearchParams({
-        q:        "mimeType!='application/vnd.google-apps.folder' and trashed=false",
-        orderBy:  'modifiedTime desc',
-        pageSize: '25',
-        fields:   'files(id,name,mimeType)',
+        q:                         "mimeType!='application/vnd.google-apps.folder' and trashed=false",
+        orderBy:                   'modifiedTime desc',
+        pageSize:                  '25',
+        fields:                    'files(id,name,mimeType)',
+        supportsAllDrives:         'true',
+        includeItemsFromAllDrives: 'true',
       })
       const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -150,11 +152,19 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
   const fetchContent = async (file: DriveFile, accessToken: string): Promise<string> => {
     const exportMime = EXPORT_MIME[file.mimeType]
     const url = exportMime
-      ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=${encodeURIComponent(exportMime)}`
-      : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`
+      ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=${encodeURIComponent(exportMime)}&supportsAllDrives=true`
+      : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&supportsAllDrives=true`
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
-    if (!res.ok) throw new Error(`Could not read "${file.name}" (${res.status})`)
+    if (!res.ok) {
+      if (res.status === 401) {
+        // Token expired — clear and prompt reconnect
+        localStorage.removeItem('drive_token')
+        setToken(null)
+        throw new Error(`Session expired — please reconnect Google Drive`)
+      }
+      throw new Error(`Could not read "${file.name}" (${res.status})`)
+    }
     const text = await res.text()
     const CAP  = 6000
     return text.length > CAP
