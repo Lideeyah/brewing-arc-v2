@@ -9,6 +9,77 @@ import GmailPicker, { type GmailThreadPayload } from '../components/GmailPicker'
 const API      = import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'
 const EXPLORER = 'https://testnet.arcscan.app'
 
+// ── Wallet Connect (MetaMask → Arc Testnet) ───────────────────────────────────
+
+declare global {
+  interface Window {
+    ethereum?: {
+      request:           (args: { method: string; params?: unknown[] }) => Promise<unknown>
+      on:                (event: string, handler: (...args: unknown[]) => void) => void
+      removeListener:    (event: string, handler: (...args: unknown[]) => void) => void
+    }
+  }
+}
+
+const ARC_CHAIN_PARAMS = {
+  chainId:         '0x4CEF52',   // 5042002
+  chainName:       'Arc Testnet',
+  nativeCurrency:  { name: 'USDC', symbol: 'USDC', decimals: 6 },
+  rpcUrls:         ['https://rpc-arc-testnet.circle.com'],
+  blockExplorerUrls: ['https://testnet.arcscan.app'],
+}
+
+function useWalletConnect() {
+  const [walletAddr, setWalletAddr] = useState<string>(
+    () => localStorage.getItem('brewing_web3_wallet') || ''
+  )
+
+  // Sync across tabs / MetaMask account changes
+  useEffect(() => {
+    if (!window.ethereum) return
+    const handler = (accounts: unknown) => {
+      const addr = (accounts as string[])[0] ?? ''
+      localStorage.setItem('brewing_web3_wallet', addr)
+      setWalletAddr(addr)
+    }
+    window.ethereum.on('accountsChanged', handler)
+    return () => window.ethereum?.removeListener('accountsChanged', handler)
+  }, [])
+
+  const connect = async () => {
+    if (!window.ethereum) {
+      alert('MetaMask is not installed. Add it at metamask.io and try again.')
+      return
+    }
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[]
+      // Switch to Arc Testnet (adds it if not present)
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: ARC_CHAIN_PARAMS.chainId }],
+        })
+      } catch (sw: unknown) {
+        if ((sw as { code?: number }).code === 4902) {
+          await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [ARC_CHAIN_PARAMS] })
+        }
+      }
+      const addr = accounts[0] ?? ''
+      localStorage.setItem('brewing_web3_wallet', addr)
+      setWalletAddr(addr)
+    } catch {
+      // user rejected — silently ignore
+    }
+  }
+
+  const disconnect = () => {
+    localStorage.removeItem('brewing_web3_wallet')
+    setWalletAddr('')
+  }
+
+  return { walletAddr, connect, disconnect }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SubTask {
@@ -972,7 +1043,9 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
   const [gmailThreads, setGmailThreads] = useState<GmailThreadPayload[]>([])
   const [slackMessages, setSlackMessages] = useState<SlackMessagePayload[]>([])
 
-  const employerAddress = localStorage.getItem('brewing_employer_address') || ''
+  // Web3 wallet takes precedence over Circle DCW for task attribution
+  const employerAddress = localStorage.getItem('brewing_web3_wallet')
+    || localStorage.getItem('brewing_employer_address') || ''
   const employerName    = localStorage.getItem('brewing_employer_name') || ''
 
   const placeholder = preselectedAgent
@@ -1170,7 +1243,7 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
 
 // ── Tab 3: Active Jobs ────────────────────────────────────────────────────────
 
-interface StreamEvent { type: string; agent?: string; message?: string; text?: string }
+interface StreamEvent { type: string; agent?: string; message?: string; text?: string; reason?: string; pipeline?: boolean }
 
 function LiveStreamPanel({ taskId, onDone }: { taskId: string; onDone: () => void }) {
   const [events,  setEvents]  = useState<StreamEvent[]>([])
@@ -1214,10 +1287,29 @@ function LiveStreamPanel({ taskId, onDone }: { taskId: string; onDone: () => voi
       <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
         {events.map((ev, i) => (
           <div key={i} className="flex items-start gap-2">
-            {ev.agent && <span className={`flex-shrink-0 font-semibold ${AGENT_COLOR[ev.agent] ?? 'text-white'}`}>{ev.agent}</span>}
-            <span className={`${ev.type === 'error' ? 'text-red-400' : ev.type === 'done' ? 'text-arc-green' : 'text-arc-sub'}`}>
-              {ev.message ?? (ev.type === 'done' ? '✓ All agents complete' : ev.type)}
-            </span>
+            {ev.type === 'routed' ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-arc-amber font-semibold">→ Router</span>
+                <span className="text-arc-sub">
+                  {ev.pipeline
+                    ? 'Full pipeline selected'
+                    : `Routed to ${ev.agent}`}
+                  {ev.reason ? ` — ${ev.reason}` : ''}
+                </span>
+                {!ev.pipeline && ev.agent && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border border-arc-green/30 ${AGENT_COLOR[ev.agent] ?? 'text-white'}`}>
+                    {ev.agent}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <>
+                {ev.agent && <span className={`flex-shrink-0 font-semibold ${AGENT_COLOR[ev.agent] ?? 'text-white'}`}>{ev.agent}</span>}
+                <span className={`${ev.type === 'error' ? 'text-red-400' : ev.type === 'done' ? 'text-arc-green' : 'text-arc-sub'}`}>
+                  {ev.message ?? (ev.type === 'done' ? '✓ All agents complete' : ev.type)}
+                </span>
+              </>
+            )}
           </div>
         ))}
         {Object.entries(current).map(([agent, text]) => text && (
@@ -1542,9 +1634,151 @@ function ReceiptsTab() {
   )
 }
 
+// ── Tab 5: Account ────────────────────────────────────────────────────────────
+
+interface BizProfile {
+  name: string; email: string; business_id: string; wallet_address: string
+  balance_usdc: number; tasks_total: number; tasks_completed: number
+  tasks_failed: number; total_spent: number
+}
+
+function AccountTab({ onSignOut }: { onSignOut: () => void }) {
+  const [profile,  setProfile]  = useState<BizProfile | null>(null)
+  const [loading,  setLoading]  = useState(true)
+  const { walletAddr, connect, disconnect } = useWalletConnect()
+
+  const circleAddr = localStorage.getItem('brewing_employer_address') || ''
+  const lookupAddr = walletAddr || circleAddr
+
+  useEffect(() => {
+    if (!lookupAddr) { setLoading(false); return }
+    fetch(`${API}/api/businesses/me?address=${encodeURIComponent(lookupAddr)}`)
+      .then(r => r.json())
+      .then(d => { setProfile(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [lookupAddr])
+
+  const successRate = profile && profile.tasks_total > 0
+    ? Math.round((profile.tasks_completed / profile.tasks_total) * 100)
+    : null
+
+  const handleSignOut = () => {
+    ['brewing_employer_address', 'brewing_employer_name', 'brewing_business_id',
+     'brewing_web3_wallet', 'gmail_token', 'gmail_send_token', 'slack_token']
+      .forEach(k => localStorage.removeItem(k))
+    onSignOut()
+  }
+
+  if (loading) return <div className="font-mono text-xs text-arc-muted mt-8">Loading account…</div>
+
+  return (
+    <div className="flex flex-col gap-6 max-w-xl">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-xl font-bold">{profile?.name || localStorage.getItem('brewing_employer_name') || 'Your Account'}</h2>
+        <p className="font-mono text-xs text-arc-muted">{profile?.email || ''}</p>
+      </div>
+
+      {/* Wallet cards */}
+      <div className="flex flex-col gap-3">
+        {/* Circle DCW */}
+        <div className="border border-arc-border rounded-xl bg-arc-surface p-5 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">Circle Managed Wallet (Arc Testnet)</div>
+            {profile && (
+              <span className="font-mono text-sm font-bold text-arc-green">{profile.balance_usdc.toFixed(4)} USDC</span>
+            )}
+          </div>
+          <div className="font-mono text-[11px] text-arc-sub break-all">{circleAddr || '—'}</div>
+          {circleAddr && (
+            <a
+              href={`${EXPLORER}/address/${circleAddr}`}
+              target="_blank" rel="noreferrer"
+              className="font-mono text-[10px] text-arc-muted hover:text-arc-green transition-colors"
+            >
+              View on ArcScan ↗
+            </a>
+          )}
+        </div>
+
+        {/* MetaMask wallet */}
+        <div className={`border rounded-xl bg-arc-surface p-5 flex flex-col gap-3 ${walletAddr ? 'border-arc-green/30' : 'border-arc-border'}`}>
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">MetaMask Wallet</div>
+            {walletAddr && <span className="font-mono text-[10px] text-arc-green">Connected ✓</span>}
+          </div>
+          {walletAddr ? (
+            <div className="flex flex-col gap-2">
+              <div className="font-mono text-[11px] text-white break-all">{walletAddr}</div>
+              <div className="flex gap-3">
+                <a
+                  href={`${EXPLORER}/address/${walletAddr}`}
+                  target="_blank" rel="noreferrer"
+                  className="font-mono text-[10px] text-arc-muted hover:text-arc-green transition-colors"
+                >
+                  View on ArcScan ↗
+                </a>
+                <button
+                  type="button" onClick={disconnect}
+                  className="font-mono text-[10px] text-arc-muted hover:text-red-400 transition-colors"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button" onClick={connect}
+              className="border border-arc-border rounded-lg px-4 py-2.5 font-mono text-xs text-arc-sub hover:border-arc-green hover:text-arc-green transition-colors text-left flex items-center gap-2"
+            >
+              <span className="text-base">🦊</span> Connect MetaMask
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Task stats */}
+      {profile && profile.tasks_total > 0 && (
+        <div className="border border-arc-border rounded-xl bg-arc-surface p-5 flex flex-col gap-4">
+          <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">Task History</div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1">
+              <div className="font-mono text-[9px] text-arc-muted uppercase tracking-widest">Tasks Posted</div>
+              <div className="font-mono text-2xl font-bold text-white">{profile.tasks_total}</div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="font-mono text-[9px] text-arc-muted uppercase tracking-widest">Completed</div>
+              <div className="font-mono text-2xl font-bold text-arc-green">{profile.tasks_completed}</div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="font-mono text-[9px] text-arc-muted uppercase tracking-widest">Total Spent</div>
+              <div className="font-mono text-2xl font-bold text-arc-amber">{profile.total_spent.toFixed(3)} USDC</div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="font-mono text-[9px] text-arc-muted uppercase tracking-widest">Success Rate</div>
+              <div className={`font-mono text-2xl font-bold ${successRate !== null && successRate >= 80 ? 'text-arc-green' : 'text-arc-sub'}`}>
+                {successRate !== null ? `${successRate}%` : '—'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sign out */}
+      <div className="flex gap-3 pt-2">
+        <button
+          type="button" onClick={handleSignOut}
+          className="font-mono text-xs border border-red-500/30 text-red-400/70 rounded-lg px-5 py-2.5 hover:border-red-400 hover:text-red-400 transition-colors"
+        >
+          Sign Out
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Dashboard shell ───────────────────────────────────────────────────────────
 
-type TabId = 'marketplace' | 'post' | 'jobs' | 'receipts'
+type TabId = 'marketplace' | 'post' | 'jobs' | 'receipts' | 'account'
 
 export default function Dashboard() {
   const navigate  = useNavigate()
@@ -1552,11 +1786,14 @@ export default function Dashboard() {
   const [refreshKey,   setRefreshKey]   = useState(0)
   const [liveTaskId,   setLiveTaskId]   = useState<string>('')
   const [preselectedAgent, setPreselectedAgent] = useState<string | undefined>()
+  const { walletAddr, connect } = useWalletConnect()
 
   const employerName    = localStorage.getItem('brewing_employer_name')    || ''
   const employerAddress = localStorage.getItem('brewing_employer_address') || ''
-  const addrShort       = employerAddress
-    ? `${employerAddress.slice(0, 6)}…${employerAddress.slice(-4)}`
+  // Display the connected web3 wallet address if present, otherwise the Circle DCW
+  const displayAddr     = walletAddr || employerAddress
+  const addrShort       = displayAddr
+    ? `${displayAddr.slice(0, 6)}…${displayAddr.slice(-4)}`
     : null
 
   const goTab = (t: TabId) => {
@@ -1579,6 +1816,7 @@ export default function Dashboard() {
     { id: 'post',        label: 'Post a Task', sub: 'New task · escrow · settle' },
     { id: 'jobs',        label: 'Active Jobs', sub: 'Status · results · timers' },
     { id: 'receipts',    label: 'Receipts',    sub: 'History · proof · download' },
+    { id: 'account',     label: 'Account',     sub: 'Profile · spend · wallets' },
   ]
 
   return (
@@ -1604,21 +1842,39 @@ export default function Dashboard() {
               {employerName ? `${employerName}` : 'Dashboard'}
             </span>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <div className="hidden sm:flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-arc-green pulse-dot" />
-              <span className="font-mono text-[11px] text-arc-green tracking-wide">Arc Testnet Live</span>
+              <span className="font-mono text-[11px] text-arc-green tracking-wide">Arc Testnet</span>
             </div>
-            {addrShort && (
+            {/* MetaMask connect chip */}
+            {walletAddr ? (
+              <button
+                onClick={() => goTab('account')}
+                className="font-mono text-[10px] text-arc-green border border-arc-green/40 rounded px-2.5 py-1 flex items-center gap-1.5 hover:border-arc-green transition-colors"
+              >
+                <span>🦊</span>
+                <span>{walletAddr.slice(0, 6)}…{walletAddr.slice(-4)}</span>
+              </button>
+            ) : (
+              <button
+                onClick={connect}
+                className="font-mono text-[10px] text-arc-muted border border-arc-border rounded px-2.5 py-1 flex items-center gap-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
+              >
+                <span>🦊</span>
+                <span className="hidden sm:inline">Connect Wallet</span>
+              </button>
+            )}
+            {addrShort && !walletAddr && (
               <span className="font-mono text-[10px] text-arc-muted border border-arc-border/50 rounded px-2.5 py-1 select-all cursor-text">
                 {addrShort}
               </span>
             )}
             <button
-              onClick={() => navigate('/onboard')}
+              onClick={() => goTab('account')}
               className="font-mono text-[10px] text-arc-sub border border-arc-border rounded px-3 py-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
             >
-              {employerAddress ? 'Switch Account' : 'Sign In'}
+              {employerName || 'Account'}
             </button>
           </div>
         </div>
@@ -1655,6 +1911,7 @@ export default function Dashboard() {
         )}
         {tab === 'jobs'        && <ActiveJobsTab key={refreshKey} liveTaskId={liveTaskId} onStreamDone={() => setLiveTaskId('')} />}
         {tab === 'receipts'    && <ReceiptsTab />}
+        {tab === 'account'     && <AccountTab onSignOut={() => navigate('/onboard')} />}
       </main>
     </div>
   )

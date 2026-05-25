@@ -1,9 +1,27 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 const API      = import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'
 const FAUCET   = 'https://faucet.circle.com'
 const EXPLORER = 'https://testnet.arcscan.app'
+
+const ARC_CHAIN_PARAMS = {
+  chainId:          '0x4CEF52',
+  chainName:        'Arc Testnet',
+  nativeCurrency:   { name: 'USDC', symbol: 'USDC', decimals: 6 },
+  rpcUrls:          ['https://rpc-arc-testnet.circle.com'],
+  blockExplorerUrls: ['https://testnet.arcscan.app'],
+}
+
+declare global {
+  interface Window {
+    ethereum?: {
+      request:        (a: { method: string; params?: unknown[] }) => Promise<unknown>
+      on:             (event: string, handler: (...args: unknown[]) => void) => void
+      removeListener: (event: string, handler: (...args: unknown[]) => void) => void
+    }
+  }
+}
 
 type Mode = 'signin' | 'create'
 type Step = 'form' | 'loading' | 'done'
@@ -25,6 +43,45 @@ export default function OnboardingPage() {
   const [email, setEmail] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<WalletResult | null>(null)
+  const [web3Addr, setWeb3Addr] = useState<string>(
+    () => localStorage.getItem('brewing_web3_wallet') || ''
+  )
+  const [web3Connecting, setWeb3Connecting] = useState(false)
+
+  // If already have a session, go straight to dashboard
+  useEffect(() => {
+    const addr = localStorage.getItem('brewing_employer_address')
+    if (addr) navigate('/dashboard')
+  }, [navigate])
+
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      alert('MetaMask is not installed. Add it at metamask.io first.')
+      return
+    }
+    setWeb3Connecting(true)
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[]
+      try {
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: ARC_CHAIN_PARAMS.chainId }] })
+      } catch (sw: unknown) {
+        if ((sw as { code?: number }).code === 4902) {
+          await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [ARC_CHAIN_PARAMS] })
+        }
+      }
+      const addr = accounts[0] ?? ''
+      localStorage.setItem('brewing_web3_wallet', addr)
+      // Use as employer address so auth guard passes
+      localStorage.setItem('brewing_employer_address', addr)
+      localStorage.setItem('brewing_employer_name', addr.slice(0, 8) + '…')
+      setWeb3Addr(addr)
+      navigate('/dashboard')
+    } catch {
+      // user rejected
+    } finally {
+      setWeb3Connecting(false)
+    }
+  }
 
   const reset = (newMode: Mode) => {
     setMode(newMode)
@@ -105,6 +162,29 @@ export default function OnboardingPage() {
           {/* ── Form step ─────────────────────────────────────────────────── */}
           {step === 'form' && (
             <div className="flex flex-col gap-8">
+
+              {/* MetaMask connect */}
+              <div className="flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={connectWallet}
+                  disabled={web3Connecting}
+                  className="w-full border border-arc-border rounded-xl px-5 py-4 flex items-center gap-4 hover:border-arc-green transition-colors group disabled:opacity-50"
+                >
+                  <span className="text-2xl">🦊</span>
+                  <div className="flex flex-col items-start gap-0.5">
+                    <span className="font-mono text-sm font-semibold text-white group-hover:text-arc-green transition-colors">
+                      {web3Connecting ? 'Connecting…' : 'Connect with MetaMask'}
+                    </span>
+                    <span className="font-mono text-[10px] text-arc-muted">Arc Testnet · instant access</span>
+                  </div>
+                </button>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 border-t border-arc-border" />
+                  <span className="font-mono text-[10px] text-arc-muted">or sign in with email</span>
+                  <div className="flex-1 border-t border-arc-border" />
+                </div>
+              </div>
 
               {/* Mode toggle */}
               <div className="flex flex-col gap-3">

@@ -266,6 +266,43 @@ async def post_task(req: PostTaskRequest):
     return {"task_id": task.task_id, "status": "in_progress"}
 
 
+async def _smart_route(description: str, agents: list, ai) -> tuple[str | None, str]:
+    """
+    Asks Claude to decide: single specialist agent or full multi-agent pipeline.
+    Returns (agent_name, reason) — agent_name=None means full pipeline.
+    """
+    import json as _j, re as _r
+    agent_summary = "\n".join(
+        f"- {a.name}: {', '.join(a.capabilities[:4])}" for a in agents
+    )
+    prompt = (
+        f"Task: {description}\n\n"
+        f"Available agents:\n{agent_summary}\n\n"
+        "Decide whether this task should be handled by a single specialist agent or the full multi-agent pipeline.\n"
+        "Use a single agent when the task is narrow and maps clearly to one agent's capabilities.\n"
+        "Use the full pipeline for broad, strategic, or multi-dimensional tasks.\n"
+        'Respond with JSON only: {"route": "<AgentName> or PIPELINE", "reason": "<one sentence>"}'
+    )
+    try:
+        resp = await ai.messages.create(
+            model      = "claude-haiku-4-5-20251001",
+            max_tokens = 120,
+            messages   = [{"role": "user", "content": prompt}],
+        )
+        raw  = resp.content[0].text.strip()
+        m    = _r.search(r'\{.*\}', raw, _r.DOTALL)
+        data = _j.loads(m.group()) if m else {}
+        route  = data.get("route", "PIPELINE").strip()
+        reason = data.get("reason", "")
+        # Only accept the route if that agent name exists in registry
+        known = {a.name for a in agents}
+        if route == "PIPELINE" or route not in known:
+            return None, reason or "Full pipeline selected"
+        return route, reason
+    except Exception:
+        return None, "Routing unavailable — using full pipeline"
+
+
 async def _run_pipeline(task, req, employer_addr: str):
     """Full agent pipeline — runs in background, emits SSE events throughout."""
     import anthropic as _anthropic
@@ -329,11 +366,23 @@ async def _run_pipeline(task, req, employer_addr: str):
         employer_key = os.getenv("ARC_PRIVATE_KEY", "")
         task.subtasks = []
 
-        # ── Single-agent path (employer hired a specific agent) ───────────────
-        if req.selected_agent:
-            agent = by_name.get(req.selected_agent)
+        # ── Smart task routing (when no agent manually selected) ─────────────
+        effective_agent = req.selected_agent
+        if not effective_agent:
+            routed_name, route_reason = await _smart_route(req.description, registry.all(), ai)
+            await _emit(tid, "routed",
+                agent    = routed_name,
+                reason   = route_reason,
+                pipeline = routed_name is None,
+            )
+            if routed_name:
+                effective_agent = routed_name
+
+        # ── Single-agent path (manually hired or smart-routed to one agent) ──
+        if effective_agent:
+            agent = by_name.get(effective_agent)
             if not agent:
-                raise ValueError(f"Agent '{req.selected_agent}' not found in registry")
+                raise ValueError(f"Agent '{effective_agent}' not found in registry")
 
             await _emit(tid, "agent_start", agent=agent.name, message="Locking USDC in escrow…")
 
@@ -655,6 +704,45 @@ async def get_wallet():
         except Exception:
             pass
     return {"address": addr, "balance_usdc": round(balance_usdc, 4), "network": "arc-testnet"}
+
+# ── Business profile ──────────────────────────────────────────────────────────
+
+@app.get("/api/businesses/me")
+async def get_my_business(address: str = ""):
+    """Return business profile + task stats for a given wallet address."""
+    if not address:
+        raise HTTPException(status_code=400, detail="address query param required")
+    biz = next(
+        (b for b in business_store._businesses.values()
+         if b.wallet_address.lower() == address.lower()),
+        None,
+    )
+    all_tasks = task_store.all()
+    my_tasks  = [
+        t for t in all_tasks
+        if t.employer_address.lower() == address.lower()
+    ]
+    completed  = [t for t in my_tasks if t.status == "completed"]
+    total_spent = round(sum(t.budget_usdc for t in completed), 4)
+
+    balance_usdc = 0.0
+    try:
+        balance_usdc = await client.native_balance(address)
+    except Exception:
+        pass
+
+    return {
+        "name":            biz.name           if biz else "",
+        "email":           biz.email          if biz else "",
+        "business_id":     biz.business_id    if biz else "",
+        "wallet_address":  address,
+        "balance_usdc":    round(balance_usdc, 4),
+        "tasks_total":     len(my_tasks),
+        "tasks_completed": len(completed),
+        "tasks_failed":    len([t for t in my_tasks if t.status == "failed"]),
+        "total_spent":     total_spent,
+    }
+
 
 # ── Agents ─────────────────────────────────────────────────────────────────────
 
