@@ -477,7 +477,6 @@ async def slack_oauth_callback(code: str = "", error: str = ""):
 
     slack_client_id     = os.getenv("SLACK_CLIENT_ID", "")
     slack_client_secret = os.getenv("SLACK_CLIENT_SECRET", "")
-    redirect_uri        = os.getenv("SLACK_REDIRECT_URI", "http://localhost:8000/oauth/slack/callback")
 
     if not slack_client_id or not slack_client_secret:
         return RedirectResponse(url=f"{frontend}/dashboard?slack_connected=1")
@@ -488,7 +487,6 @@ async def slack_oauth_callback(code: str = "", error: str = ""):
                 "client_id":     slack_client_id,
                 "client_secret": slack_client_secret,
                 "code":          code,
-                "redirect_uri":  redirect_uri,
             })
         data = resp.json()
         if not data.get("ok"):

@@ -298,10 +298,9 @@ function SlackConnect({ onMessagesChange }: { onMessagesChange: (msgs: SlackMess
 
   const connect = () => {
     if (SLACK_CLIENT_ID) {
-      // Real OAuth — redirect to Slack
-      const redirect = encodeURIComponent(`${import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'}/oauth/slack/callback`)
-      const scope    = encodeURIComponent('channels:history,channels:read')
-      window.location.href = `https://slack.com/oauth/v2/authorize?client_id=${SLACK_CLIENT_ID}&scope=${scope}&redirect_uri=${redirect}`
+      // Real OAuth — redirect to Slack (no redirect_uri param; Slack uses the one configured in app settings)
+      const scope = encodeURIComponent('channels:history,channels:read')
+      window.location.href = `https://slack.com/oauth/v2/authorize?client_id=${SLACK_CLIENT_ID}&scope=${scope}`
     } else {
       // No credentials yet — show placeholder state
       localStorage.setItem('slack_connected', '1')
