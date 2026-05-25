@@ -723,35 +723,25 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
     const pickerGmailSubjects = new Set(gmailThreads.map(t => t.subject))
     const allGmailThreads  = [...gmailThreads, ...modalGmail.filter(t => !pickerGmailSubjects.has(t.subject))]
 
-    try {
-      const res = await fetch(`${API}/api/tasks`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          description:      desc.trim(),
-          budget_usdc:      parseFloat(budget) || 0.10,
-          deadline_hours:   parseInt(deadline) || 24,
-          employer_address: employerAddress,
-          employer_name:    employerName,
-          drive_files:      allDriveFiles,
-          gmail_threads:    allGmailThreads,
-          slack_messages:   slackMessages,
-        }),
-        signal: AbortSignal.timeout(180_000),
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail ?? 'Request failed')
-      }
-      const data: TaskRecord = await res.json()
-      setResult(data)
-      setDesc('')
-      onTaskPosted()
-    } catch (err: unknown) {
-      setError((err as Error).message ?? 'Something went wrong')
-    } finally {
-      setSub(false)
-    }
+    // Switch to Active Jobs immediately — task is saved to Redis before Claude runs,
+    // so polling will show it within seconds.
+    onTaskPosted()
+
+    fetch(`${API}/api/tasks`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        description:      desc.trim(),
+        budget_usdc:      parseFloat(budget) || 0.10,
+        deadline_hours:   parseInt(deadline) || 24,
+        employer_address: employerAddress,
+        employer_name:    employerName,
+        drive_files:      allDriveFiles,
+        gmail_threads:    allGmailThreads,
+        slack_messages:   slackMessages,
+      }),
+      signal: AbortSignal.timeout(180_000),
+    }).catch(() => { /* handled by polling on Active Jobs tab */ })
   }
 
   const lockedUsdc = (parseFloat(budget) || 0.10).toFixed(3)
@@ -1256,7 +1246,7 @@ type TabId = 'marketplace' | 'post' | 'jobs' | 'receipts'
 
 export default function Dashboard() {
   const navigate  = useNavigate()
-  const [tab, setTab]             = useState<TabId>('marketplace')
+  const [tab, setTab]             = useState<TabId>(() => (sessionStorage.getItem('dashboard_tab') as TabId) || 'marketplace')
   const [refreshKey, setRefreshKey] = useState(0)
   const [preselectedAgent, setPreselectedAgent] = useState<string | undefined>()
 
@@ -1266,6 +1256,11 @@ export default function Dashboard() {
     ? `${employerAddress.slice(0, 6)}…${employerAddress.slice(-4)}`
     : null
 
+  const goTab = (t: TabId) => {
+    sessionStorage.setItem('dashboard_tab', t)
+    setTab(t)
+  }
+
   // Auth guard — redirect to onboard if no session
   useEffect(() => {
     if (!employerAddress) navigate('/onboard')
@@ -1273,7 +1268,7 @@ export default function Dashboard() {
 
   const handleHire = (agentName: string) => {
     setPreselectedAgent(agentName)
-    setTab('post')
+    goTab('post')
   }
 
   const TABS: { id: TabId; label: string; sub: string }[] = [
@@ -1332,7 +1327,7 @@ export default function Dashboard() {
           {TABS.map(t => (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
+              onClick={() => goTab(t.id)}
               className={`px-6 py-4 flex flex-col gap-0.5 border-b-2 transition-all flex-shrink-0 ${
                 tab === t.id
                   ? 'border-arc-green text-white'
@@ -1352,7 +1347,7 @@ export default function Dashboard() {
         {tab === 'post'        && (
           <PostTaskTab
             preselectedAgent={preselectedAgent}
-            onTaskPosted={() => { setRefreshKey(k => k + 1); setTab('jobs') }}
+            onTaskPosted={() => { setRefreshKey(k => k + 1); goTab('jobs') }}
           />
         )}
         {tab === 'jobs'        && <ActiveJobsTab key={refreshKey} />}
