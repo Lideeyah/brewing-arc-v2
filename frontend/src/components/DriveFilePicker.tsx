@@ -309,20 +309,19 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
       </div>
 
       {/* Search input */}
-      <form
-        onSubmit={e => { e.preventDefault(); searchFiles(search) }}
-        className="flex items-center gap-2"
-      >
+      <div className="flex items-center gap-2">
         <input
           type="text"
           value={search}
           onChange={e => setSearch(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); searchFiles(search) } }}
           placeholder="Search Drive…"
           className="flex-1 bg-arc-surface border border-arc-border rounded-lg px-3 py-1.5 font-mono text-xs text-white placeholder:text-arc-muted focus:outline-none focus:border-arc-green"
         />
         <button
-          type="submit"
+          type="button"
           disabled={!search.trim() || searching}
+          onClick={() => searchFiles(search)}
           className="font-mono text-[10px] text-black bg-arc-green rounded-lg px-3 py-1.5 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           {searching ? '⟳' : 'Search'}
@@ -336,7 +335,7 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
             Clear
           </button>
         )}
-      </form>
+      </div>
 
       <div className="border border-arc-border rounded-lg overflow-hidden">
         {listLoading || searching ? (
