@@ -1176,6 +1176,11 @@ function ActiveJobsTab() {
   const [openIds,  setOpenIds]  = useState<Set<string>>(new Set())
   const [firstLoad,setFirstLoad]= useState(true)
   const myAddress = localStorage.getItem('brewing_employer_address') ?? ''
+  const myName    = localStorage.getItem('brewing_employer_name') ?? ''
+
+  const matchesMe = (t: TaskRecord) =>
+    t.employer_address.toLowerCase() === myAddress.toLowerCase() ||
+    (myName && t.employer_name === myName)
 
   const toggle = (id: string) =>
     setOpenIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -1183,7 +1188,7 @@ function ActiveJobsTab() {
   const refresh = useCallback(async () => {
     try {
       const data: TaskRecord[] = await fetch(`${API}/api/tasks`).then(r => r.json())
-      const mine = myAddress ? data.filter(t => t.employer_address === myAddress) : data
+      const mine = myAddress || myName ? data.filter(matchesMe) : data
       setTasks(mine)
       if (firstLoad && mine.length > 0) {
         setOpenIds(new Set([mine[0].task_id]))
@@ -1325,12 +1330,17 @@ function ReceiptsTab() {
   const [loading, setLoad]    = useState(true)
   const [openIds, setOpenIds] = useState<Set<string>>(new Set())
   const myAddress = localStorage.getItem('brewing_employer_address') ?? ''
+  const myName    = localStorage.getItem('brewing_employer_name') ?? ''
+
+  const matchesMe = (t: TaskRecord) =>
+    t.employer_address.toLowerCase() === myAddress.toLowerCase() ||
+    (myName && t.employer_name === myName)
 
   useEffect(() => {
     fetch(`${API}/api/tasks`)
       .then(r => r.json())
       .then((d: TaskRecord[]) => {
-        const mine = myAddress ? d.filter(t => t.employer_address === myAddress) : d
+        const mine = myAddress || myName ? d.filter(matchesMe) : d
         const completed = mine.filter(t => t.status === 'completed')
         setTasks(completed)
         if (completed.length > 0) setOpenIds(new Set([completed[0].task_id]))
