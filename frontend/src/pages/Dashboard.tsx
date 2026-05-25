@@ -331,11 +331,6 @@ function SlackConnect({ onMessagesChange }: { onMessagesChange: (msgs: SlackMess
         <div className="flex items-center gap-2">
           <SlackIcon className="text-arc-green" />
           <span className="font-mono text-[11px] text-arc-green font-semibold">Slack connected</span>
-          {!SLACK_CLIENT_ID && (
-            <span className="font-mono text-[9px] text-arc-amber border border-arc-amber/30 rounded px-1.5 py-0.5">
-              Add VITE_SLACK_CLIENT_ID to pull live messages
-            </span>
-          )}
         </div>
         <button
           type="button"
