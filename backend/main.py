@@ -101,7 +101,7 @@ class RegisterAgentRequest(BaseModel):
     capabilities:   list[str]
     payment_addr:   str
     price_per_task: float = 0.033
-    webhook_url:    str   = ""
+    webhook_url:    str
 
 # ── Health ────────────────────────────────────────────────────────────────────
 

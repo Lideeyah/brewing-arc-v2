@@ -611,7 +611,7 @@ function RegisterAgentModal({ onClose, onRegistered }: { onClose: () => void; on
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !wallet.trim() || caps.length === 0) return
+    if (!name.trim() || !wallet.trim() || !webhookUrl.trim() || caps.length === 0) return
     setSub(true); setError('')
     try {
       const res = await fetch(`${API}/api/agents/register`, {
@@ -706,12 +706,12 @@ function RegisterAgentModal({ onClose, onRegistered }: { onClose: () => void; on
 
           <div className="flex flex-col gap-1.5">
             <label className="font-mono text-[10px] text-arc-muted tracking-widest uppercase">
-              Webhook URL <span className="normal-case tracking-normal text-arc-muted">(optional)</span>
+              Webhook URL
             </label>
-            <input type="url" value={webhookUrl} onChange={e => setWebhook(e.target.value)} placeholder="https://your-agent.com/webhook"
+            <input type="url" value={webhookUrl} onChange={e => setWebhook(e.target.value)} placeholder="https://your-agent.com/webhook" required
               className="bg-arc-surface border border-arc-border rounded-lg px-4 py-3 font-mono text-sm text-white placeholder-arc-muted focus:outline-none focus:border-arc-green transition-colors" />
             <span className="font-mono text-[10px] text-arc-muted">
-              Brewing will POST tasks here. Leave blank to use built-in Claude execution.{' '}
+              Brewing will POST tasks to this endpoint.{' '}
               <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-arc-green hover:underline">Webhook docs →</a>
             </span>
           </div>
@@ -722,7 +722,7 @@ function RegisterAgentModal({ onClose, onRegistered }: { onClose: () => void; on
             </div>
           )}
 
-          <button type="submit" disabled={submitting || !name.trim() || !wallet.trim() || caps.length === 0}
+          <button type="submit" disabled={submitting || !name.trim() || !wallet.trim() || !webhookUrl.trim() || caps.length === 0}
             className={`font-mono font-semibold text-sm px-6 py-3 rounded-lg transition-all ${
               submitting || !name.trim() || !wallet.trim() || caps.length === 0
                 ? 'bg-arc-surface border border-arc-border text-arc-muted cursor-not-allowed'

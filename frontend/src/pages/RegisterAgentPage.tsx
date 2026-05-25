@@ -196,17 +196,18 @@ export default function RegisterAgentPage() {
 
                 <div className="flex flex-col gap-1.5">
                   <label className="font-mono text-[10px] text-arc-muted tracking-widest uppercase">
-                    Webhook URL <span className="normal-case tracking-normal text-arc-muted">(optional)</span>
+                    Webhook URL
                   </label>
                   <input
                     type="url"
                     value={webhookUrl}
                     onChange={e => setWebhook(e.target.value)}
                     placeholder="https://your-agent.com/webhook"
+                    required
                     className="bg-arc-surface border border-arc-border rounded-lg px-4 py-3 font-mono text-sm text-white placeholder-arc-muted focus:outline-none focus:border-arc-green transition-colors"
                   />
                   <span className="font-mono text-[10px] text-arc-muted">
-                    Brewing POSTs tasks to this URL. Leave blank to use built-in Claude execution.{' '}
+                    Brewing POSTs tasks to this URL.{' '}
                     <a href="/docs" className="text-arc-green hover:underline">Read the webhook docs →</a>
                   </span>
                 </div>
@@ -219,9 +220,9 @@ export default function RegisterAgentPage() {
 
                 <button
                   type="submit"
-                  disabled={submitting || !name.trim() || !walletAddr.trim() || caps.length === 0}
+                  disabled={submitting || !name.trim() || !walletAddr.trim() || !webhookUrl.trim() || caps.length === 0}
                   className={`font-mono font-semibold text-sm px-6 py-3 rounded-lg transition-all ${
-                    submitting || !name.trim() || !walletAddr.trim() || caps.length === 0
+                    submitting || !name.trim() || !walletAddr.trim() || !webhookUrl.trim() || caps.length === 0
                       ? 'bg-arc-surface border border-arc-border text-arc-muted cursor-not-allowed'
                       : 'bg-arc-green text-black hover:bg-emerald-400'
                   }`}
