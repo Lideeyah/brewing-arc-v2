@@ -961,7 +961,7 @@ function MarketplaceTab({ onHire }: { onHire: (agentName: string) => void }) {
 
 // ── Tab 2: Post a Task ────────────────────────────────────────────────────────
 
-function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: string; onTaskPosted: () => void }) {
+function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: string; onTaskPosted: (taskId: string) => void }) {
   const [desc, setDesc]               = useState('')
   const [budget, setBudget]           = useState('0.10')
   const [deadline, setDeadline]       = useState('24')
@@ -983,25 +983,27 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
     e.preventDefault()
     if (!desc.trim() || submitting) return
     setSub(true); setError(''); setResult(null)
-
-    onTaskPosted()
-
-    fetch(`${API}/api/tasks`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        description:      desc.trim(),
-        budget_usdc:      parseFloat(budget) || 0.10,
-        deadline_hours:   parseInt(deadline) || 24,
-        employer_address: employerAddress,
-        employer_name:    employerName,
-        selected_agent:   preselectedAgent ?? '',
-        drive_files:      driveFiles,
-        gmail_threads:    gmailThreads,
-        slack_messages:   slackMessages,
-      }),
-      signal: AbortSignal.timeout(180_000),
-    }).catch(() => { /* handled by polling on Active Jobs tab */ })
+    try {
+      const res = await fetch(`${API}/api/tasks`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          description:      desc.trim(),
+          budget_usdc:      parseFloat(budget) || 0.10,
+          deadline_hours:   parseInt(deadline) || 24,
+          employer_address: employerAddress,
+          employer_name:    employerName,
+          selected_agent:   preselectedAgent ?? '',
+          drive_files:      driveFiles,
+          gmail_threads:    gmailThreads,
+          slack_messages:   slackMessages,
+        }),
+      })
+      const data = await res.json()
+      onTaskPosted(data.task_id ?? '')
+    } catch {
+      onTaskPosted('')
+    }
   }
 
   const lockedUsdc = (parseFloat(budget) || 0.10).toFixed(3)
@@ -1168,7 +1170,69 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
 
 // ── Tab 3: Active Jobs ────────────────────────────────────────────────────────
 
-function ActiveJobsTab() {
+interface StreamEvent { type: string; agent?: string; message?: string; text?: string }
+
+function LiveStreamPanel({ taskId, onDone }: { taskId: string; onDone: () => void }) {
+  const [events,  setEvents]  = useState<StreamEvent[]>([])
+  const [current, setCurrent] = useState<Record<string, string>>({}) // agent → accumulated text
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!taskId) return
+    const es = new EventSource(`${API}/api/tasks/${taskId}/stream`)
+    es.onmessage = (e) => {
+      const ev: StreamEvent = JSON.parse(e.data)
+      if (ev.type === 'ping') return
+      if (ev.type === 'text_chunk' && ev.agent && ev.text) {
+        setCurrent(prev => ({ ...prev, [ev.agent!]: (prev[ev.agent!] ?? '') + ev.text }))
+        return
+      }
+      if (ev.type === 'text_start') return
+      setEvents(prev => [...prev, ev])
+      if (ev.type === 'done' || ev.type === 'error') {
+        es.close()
+        setTimeout(onDone, 1500)
+      }
+    }
+    es.onerror = () => es.close()
+    return () => es.close()
+  }, [taskId])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [events, current])
+
+  const AGENT_COLOR: Record<string, string> = {
+    Planner: 'text-arc-amber', Synthesizer: 'text-purple-400',
+    MarketResearchBot: 'text-arc-green', SentimentBot: 'text-blue-400', PortfolioBot: 'text-emerald-400',
+  }
+
+  return (
+    <div className="border border-arc-green/20 rounded-xl bg-black p-5 flex flex-col gap-3 font-mono text-xs">
+      <div className="flex items-center gap-2 text-arc-green text-[10px] uppercase tracking-widest">
+        <span className="w-2 h-2 rounded-full bg-arc-green animate-pulse" />
+        Live Agent Stream
+      </div>
+      <div className="flex flex-col gap-2 max-h-96 overflow-y-auto">
+        {events.map((ev, i) => (
+          <div key={i} className="flex items-start gap-2">
+            {ev.agent && <span className={`flex-shrink-0 font-semibold ${AGENT_COLOR[ev.agent] ?? 'text-white'}`}>{ev.agent}</span>}
+            <span className={`${ev.type === 'error' ? 'text-red-400' : ev.type === 'done' ? 'text-arc-green' : 'text-arc-sub'}`}>
+              {ev.message ?? (ev.type === 'done' ? '✓ All agents complete' : ev.type)}
+            </span>
+          </div>
+        ))}
+        {Object.entries(current).map(([agent, text]) => text && (
+          <div key={agent} className="flex flex-col gap-1">
+            <span className={`font-semibold text-[10px] ${AGENT_COLOR[agent] ?? 'text-white'}`}>{agent} output:</span>
+            <span className="text-arc-sub leading-relaxed whitespace-pre-wrap">{text}<span className="animate-pulse">▌</span></span>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  )
+}
+
+function ActiveJobsTab({ liveTaskId = '', onStreamDone = () => {} }: { liveTaskId?: string; onStreamDone?: () => void }) {
   const [tasks,    setTasks]    = useState<TaskRecord[]>([])
   const [loading,  setLoad]     = useState(true)
   const [openIds,  setOpenIds]  = useState<Set<string>>(new Set())
@@ -1204,13 +1268,17 @@ function ActiveJobsTab() {
   if (loading) return <div className="font-mono text-xs text-arc-muted mt-8">Loading jobs…</div>
 
   if (tasks.length === 0) return (
-    <div className="border border-arc-border rounded-xl p-12 text-center">
-      <div className="font-mono text-xs text-arc-muted">No tasks yet — post your first task</div>
+    <div className="flex flex-col gap-3">
+      {liveTaskId && <LiveStreamPanel taskId={liveTaskId} onDone={onStreamDone} />}
+      <div className="border border-arc-border rounded-xl p-12 text-center">
+        <div className="font-mono text-xs text-arc-muted">No tasks yet — post your first task</div>
+      </div>
     </div>
   )
 
   return (
     <div className="flex flex-col gap-3">
+      {liveTaskId && <LiveStreamPanel taskId={liveTaskId} onDone={onStreamDone} />}
       <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">
         {tasks.length} TASK{tasks.length !== 1 ? 'S' : ''} · click a row to expand
       </div>
@@ -1481,7 +1549,8 @@ type TabId = 'marketplace' | 'post' | 'jobs' | 'receipts'
 export default function Dashboard() {
   const navigate  = useNavigate()
   const [tab, setTab]             = useState<TabId>(() => (sessionStorage.getItem('dashboard_tab') as TabId) || 'marketplace')
-  const [refreshKey, setRefreshKey] = useState(0)
+  const [refreshKey,   setRefreshKey]   = useState(0)
+  const [liveTaskId,   setLiveTaskId]   = useState<string>('')
   const [preselectedAgent, setPreselectedAgent] = useState<string | undefined>()
 
   const employerName    = localStorage.getItem('brewing_employer_name')    || ''
@@ -1581,10 +1650,10 @@ export default function Dashboard() {
         {tab === 'post'        && (
           <PostTaskTab
             preselectedAgent={preselectedAgent}
-            onTaskPosted={() => { setRefreshKey(k => k + 1); goTab('jobs') }}
+            onTaskPosted={(taskId) => { setLiveTaskId(taskId); setRefreshKey(k => k + 1); goTab('jobs') }}
           />
         )}
-        {tab === 'jobs'        && <ActiveJobsTab key={refreshKey} />}
+        {tab === 'jobs'        && <ActiveJobsTab key={refreshKey} liveTaskId={liveTaskId} onStreamDone={() => setLiveTaskId('')} />}
         {tab === 'receipts'    && <ReceiptsTab />}
       </main>
     </div>
