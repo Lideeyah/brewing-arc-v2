@@ -71,6 +71,8 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
   const [listLoading,  setListLoading] = useState(false)
   const [selectingAll, setSelectingAll] = useState(false)
   const [error,        setError]       = useState<string | null>(null)
+  const [search,       setSearch]      = useState('')
+  const [searching,    setSearching]   = useState(false)
 
   // Parse token from URL hash after redirect-based OAuth
   useEffect(() => {
@@ -117,9 +119,35 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
     window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`
   }
 
+  const searchFiles = async (q: string) => {
+    if (!token || !q.trim()) return
+    setSearching(true); setError(null)
+    try {
+      const params = new URLSearchParams({
+        q:                         `name contains '${q.trim().replace(/'/g, "\\'")}' and trashed=false`,
+        orderBy:                   'modifiedTime desc',
+        pageSize:                  '25',
+        fields:                    'files(id,name,mimeType)',
+        supportsAllDrives:         'true',
+        includeItemsFromAllDrives: 'true',
+      })
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(`Drive API ${res.status}`)
+      const data = await res.json()
+      setFiles((data.files ?? []).filter((f: DriveFile) => isSupported(f.mimeType)))
+    } catch (e: unknown) {
+      setError((e as Error).message ?? 'Search failed')
+    } finally {
+      setSearching(false)
+    }
+  }
+
   const loadFileList = async (accessToken: string) => {
     setListLoading(true)
     setError(null)
+    setSearch('')
     try {
       const params = new URLSearchParams({
         q:                         "mimeType!='application/vnd.google-apps.folder' and trashed=false",
@@ -280,9 +308,41 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         </button>
       </div>
 
+      {/* Search input */}
+      <form
+        onSubmit={e => { e.preventDefault(); searchFiles(search) }}
+        className="flex items-center gap-2"
+      >
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search Drive…"
+          className="flex-1 bg-arc-surface border border-arc-border rounded-lg px-3 py-1.5 font-mono text-xs text-white placeholder:text-arc-muted focus:outline-none focus:border-arc-green"
+        />
+        <button
+          type="submit"
+          disabled={!search.trim() || searching}
+          className="font-mono text-[10px] text-black bg-arc-green rounded-lg px-3 py-1.5 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {searching ? '⟳' : 'Search'}
+        </button>
+        {search && (
+          <button
+            type="button"
+            onClick={() => { setSearch(''); loadFileList(token!) }}
+            className="font-mono text-[10px] text-arc-muted hover:text-white transition-colors"
+          >
+            Clear
+          </button>
+        )}
+      </form>
+
       <div className="border border-arc-border rounded-lg overflow-hidden">
-        {listLoading ? (
-          <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">Loading Drive files…</div>
+        {listLoading || searching ? (
+          <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">
+            {searching ? 'Searching…' : 'Loading Drive files…'}
+          </div>
         ) : files.length === 0 ? (
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">No compatible files found</div>
         ) : (
