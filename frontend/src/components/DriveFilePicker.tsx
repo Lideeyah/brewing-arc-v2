@@ -1,7 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 const SCOPE     = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file'
+const STATE_KEY = 'drive_oauth'
+
+function getRedirectUri() {
+  return `${window.location.origin}/dashboard`
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -28,7 +33,6 @@ interface Props {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Google Workspace types need the /export endpoint; everything else uses ?alt=media
 const EXPORT_MIME: Record<string, string> = {
   'application/vnd.google-apps.document':     'text/plain',
   'application/vnd.google-apps.spreadsheet':  'text/csv',
@@ -50,7 +54,6 @@ function typeLabel(mimeType: string) {
   return TYPE_LABEL[mimeType] ?? 'File'
 }
 
-// Anything that can't be read as text — skip silently
 const UNSUPPORTED_PREFIXES = ['image/', 'video/', 'audio/']
 function isSupported(mimeType: string) {
   if (UNSUPPORTED_PREFIXES.some(p => mimeType.startsWith(p))) return false
@@ -61,7 +64,6 @@ function isSupported(mimeType: string) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DriveFilePicker({ onFilesChange }: Props) {
-  const [gisReady,     setGisReady]    = useState(false)
   const [token,        setToken]       = useState<string | null>(() => localStorage.getItem('drive_token'))
   const [files,        setFiles]       = useState<DriveFile[]>([])
   const [selected,     setSelected]    = useState<SelectedFile[]>([])
@@ -70,47 +72,25 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
   const [selectingAll, setSelectingAll] = useState(false)
   const [error,        setError]       = useState<string | null>(null)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tokenClientRef = useRef<{ requestAccessToken: (o?: { prompt?: string }) => void } | null>(null)
-
-  // Load Google Identity Services script once
+  // Parse token from URL hash after redirect-based OAuth
   useEffect(() => {
-    if (!CLIENT_ID) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((window as any).google?.accounts) { setGisReady(true); return }
-    const existing = document.getElementById('gsi-script')
-    if (existing) { existing.addEventListener('load', () => setGisReady(true)); return }
-    const s = document.createElement('script')
-    s.id    = 'gsi-script'
-    s.src   = 'https://accounts.google.com/gsi/client'
-    s.async = true
-    s.defer = true
-    s.onload = () => setGisReady(true)
-    document.head.appendChild(s)
+    const hash = window.location.hash.substring(1)
+    if (!hash) return
+    const params = new URLSearchParams(hash)
+    if (params.get('state') !== STATE_KEY) return
+    const accessToken = params.get('access_token')
+    if (!accessToken) {
+      const err = params.get('error')
+      if (err) setError(`OAuth error: ${err}`)
+      return
+    }
+    localStorage.setItem('drive_token', accessToken)
+    localStorage.setItem('drive_scopes', SCOPE)
+    setToken(accessToken)
+    window.history.replaceState({}, '', window.location.pathname + window.location.search)
+    loadFileList(accessToken)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Init OAuth token client once GIS is loaded
-  useEffect(() => {
-    if (!gisReady || !CLIENT_ID) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    tokenClientRef.current = (window as any).google.accounts.oauth2.initTokenClient({
-      client_id:      CLIENT_ID,
-      scope:          SCOPE,
-      callback:       async (resp: { access_token?: string; error?: string }) => {
-        if (resp.error || !resp.access_token) {
-          setError(`Sign-in failed: ${resp.error ?? 'no token returned'}`)
-          return
-        }
-        localStorage.setItem('drive_token', resp.access_token)
-        localStorage.setItem('drive_scopes', SCOPE)
-        setToken(resp.access_token)
-        await loadFileList(resp.access_token)
-      },
-      error_callback: (err: { type: string; message?: string }) => {
-        setError(`Google error: ${err.type}${err.message ? ' — ' + err.message : ''}`)
-      },
-    })
-  }, [gisReady])
 
   // Auto-load files when token is restored from localStorage
   useEffect(() => {
@@ -121,12 +101,20 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         setToken(null)
       })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const connect = () => {
     setError(null)
-    tokenClientRef.current?.requestAccessToken({ prompt: 'select_account' })
+    const params = new URLSearchParams({
+      client_id:     CLIENT_ID,
+      redirect_uri:  getRedirectUri(),
+      response_type: 'token',
+      scope:         SCOPE,
+      prompt:        'select_account',
+      state:         STATE_KEY,
+    })
+    window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`
   }
 
   const loadFileList = async (accessToken: string) => {
@@ -146,7 +134,7 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         if (res.status === 401) {
           localStorage.removeItem('drive_token')
           setToken(null)
-          tokenClientRef.current?.requestAccessToken({ prompt: 'select_account' })
+          connect()
         }
         throw new Error(`Drive API ${res.status}`)
       }
@@ -249,8 +237,7 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         <button
           type="button"
           onClick={connect}
-          disabled={!gisReady}
-          className="flex items-center gap-2 border border-arc-border rounded-lg px-4 py-2.5 font-mono text-xs text-arc-sub hover:border-arc-green hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed w-fit"
+          className="flex items-center gap-2 border border-arc-border rounded-lg px-4 py-2.5 font-mono text-xs text-arc-sub hover:border-arc-green hover:text-white transition-colors w-fit"
         >
           <DriveIcon />
           Connect Google Drive
@@ -263,7 +250,6 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
   // ── Render: connected, show file list ─────────────────────────────────────
   return (
     <div className="flex flex-col gap-3">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <DriveIcon className="text-arc-green" />
@@ -284,7 +270,6 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         </button>
       </div>
 
-      {/* File list */}
       <div className="border border-arc-border rounded-lg overflow-hidden">
         {listLoading ? (
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">Loading Drive files…</div>
@@ -292,7 +277,6 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">No compatible files found</div>
         ) : (
           <>
-            {/* Select all row */}
             <label className="flex items-center gap-3 px-4 py-2 bg-arc-surface border-b border-arc-border cursor-pointer hover:bg-black/20 transition-colors">
               <input
                 type="checkbox"
@@ -306,41 +290,40 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
               </span>
               {selectingAll && <span className="font-mono text-[10px] text-arc-amber animate-pulse">Reading all…</span>}
             </label>
-          <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
-            {files.map(file => {
-              const isSelected = selected.some(s => s.id === file.id)
-              const isFetching = fetchingId === file.id
-              const isDisabled = selectingAll || isFetching || (!!fetchingId && !isSelected)
+            <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
+              {files.map(file => {
+                const isSelected = selected.some(s => s.id === file.id)
+                const isFetching = fetchingId === file.id
+                const isDisabled = selectingAll || isFetching || (!!fetchingId && !isSelected)
 
-              return (
-                <label
-                  key={file.id}
-                  className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${
-                    isDisabled ? 'cursor-wait opacity-60' : 'cursor-pointer'
-                  } ${isSelected ? 'bg-arc-green/5' : 'hover:bg-arc-surface'}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    disabled={isDisabled}
-                    onChange={() => !isDisabled && toggleFile(file)}
-                    className="accent-arc-green flex-shrink-0"
-                  />
-                  <span className="font-mono text-[9px] text-arc-muted border border-arc-border rounded px-1.5 py-0.5 flex-shrink-0 uppercase tracking-wide">
-                    {typeLabel(file.mimeType)}
-                  </span>
-                  <span className="font-mono text-[11px] text-white flex-1 truncate">{file.name}</span>
-                  {isFetching && <span className="font-mono text-[10px] text-arc-amber flex-shrink-0 animate-pulse">Reading…</span>}
-                  {isSelected && !isFetching && <span className="font-mono text-[10px] text-arc-green flex-shrink-0">✓</span>}
-                </label>
-              )
-            })}
-          </div>
+                return (
+                  <label
+                    key={file.id}
+                    className={`flex items-center gap-3 px-4 py-2.5 transition-colors ${
+                      isDisabled ? 'cursor-wait opacity-60' : 'cursor-pointer'
+                    } ${isSelected ? 'bg-arc-green/5' : 'hover:bg-arc-surface'}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={isDisabled}
+                      onChange={() => !isDisabled && toggleFile(file)}
+                      className="accent-arc-green flex-shrink-0"
+                    />
+                    <span className="font-mono text-[9px] text-arc-muted border border-arc-border rounded px-1.5 py-0.5 flex-shrink-0 uppercase tracking-wide">
+                      {typeLabel(file.mimeType)}
+                    </span>
+                    <span className="font-mono text-[11px] text-white flex-1 truncate">{file.name}</span>
+                    {isFetching && <span className="font-mono text-[10px] text-arc-amber flex-shrink-0 animate-pulse">Reading…</span>}
+                    {isSelected && !isFetching && <span className="font-mono text-[10px] text-arc-green flex-shrink-0">✓</span>}
+                  </label>
+                )
+              })}
+            </div>
           </>
         )}
       </div>
 
-      {/* Selected summary */}
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {selected.map(s => (

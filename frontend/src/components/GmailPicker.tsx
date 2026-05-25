@@ -1,7 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 const SCOPE     = 'https://www.googleapis.com/auth/gmail.readonly'
+const STATE_KEY = 'gmail_oauth'
+
+function getRedirectUri() {
+  return `${window.location.origin}/dashboard`
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,11 +41,9 @@ function decodeBase64(str: string): string {
 }
 
 function extractBody(payload: Record<string, unknown>): string {
-  // Try direct body first
   const body = payload.body as { data?: string } | undefined
   if (body?.data) return decodeBase64(body.data)
 
-  // Walk parts
   const parts = payload.parts as Array<Record<string, unknown>> | undefined
   if (!parts) return ''
 
@@ -51,7 +54,6 @@ function extractBody(payload: Record<string, unknown>): string {
       if (partBody?.data) return decodeBase64(partBody.data)
     }
   }
-  // Recurse into multipart
   for (const part of parts) {
     const nested = extractBody(part)
     if (nested) return nested
@@ -66,7 +68,6 @@ function getHeader(headers: Array<{ name: string; value: string }>, name: string
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function GmailPicker({ onThreadsChange }: Props) {
-  const [gisReady,     setGisReady]     = useState(false)
   const [token,        setToken]        = useState<string | null>(() => localStorage.getItem('gmail_token'))
   const [threads,      setThreads]      = useState<GmailThread[]>([])
   const [selected,     setSelected]     = useState<Map<string, GmailThreadPayload>>(new Map())
@@ -75,46 +76,24 @@ export default function GmailPicker({ onThreadsChange }: Props) {
   const [selectingAll, setSelectingAll] = useState(false)
   const [error,        setError]        = useState<string | null>(null)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tokenClientRef = useRef<{ requestAccessToken: (o?: { prompt?: string }) => void } | null>(null)
-
-  // Load GIS script once
+  // Parse token from URL hash after redirect-based OAuth
   useEffect(() => {
-    if (!CLIENT_ID) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((window as any).google?.accounts) { setGisReady(true); return }
-    const existing = document.getElementById('gsi-script')
-    if (existing) { existing.addEventListener('load', () => setGisReady(true)); return }
-    const s = document.createElement('script')
-    s.id    = 'gsi-script'
-    s.src   = 'https://accounts.google.com/gsi/client'
-    s.async = true
-    s.defer = true
-    s.onload = () => setGisReady(true)
-    document.head.appendChild(s)
+    const hash = window.location.hash.substring(1)
+    if (!hash) return
+    const params = new URLSearchParams(hash)
+    if (params.get('state') !== STATE_KEY) return
+    const accessToken = params.get('access_token')
+    if (!accessToken) {
+      const err = params.get('error')
+      if (err) setError(`OAuth error: ${err}`)
+      return
+    }
+    localStorage.setItem('gmail_token', accessToken)
+    setToken(accessToken)
+    window.history.replaceState({}, '', window.location.pathname + window.location.search)
+    loadThreadList(accessToken)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Init token client once GIS ready
-  useEffect(() => {
-    if (!gisReady || !CLIENT_ID) return
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    tokenClientRef.current = (window as any).google.accounts.oauth2.initTokenClient({
-      client_id:      CLIENT_ID,
-      scope:          SCOPE,
-      callback:       async (resp: { access_token?: string; error?: string }) => {
-        if (resp.error || !resp.access_token) {
-          setError(`Sign-in failed: ${resp.error ?? 'no token returned'}`)
-          return
-        }
-        localStorage.setItem('gmail_token', resp.access_token)
-        setToken(resp.access_token)
-        await loadThreadList(resp.access_token)
-      },
-      error_callback: (err: { type: string; message?: string }) => {
-        setError(`Google error: ${err.type}${err.message ? ' — ' + err.message : ''}`)
-      },
-    })
-  }, [gisReady])
 
   // Auto-load threads when token is restored from localStorage
   useEffect(() => {
@@ -125,22 +104,27 @@ export default function GmailPicker({ onThreadsChange }: Props) {
         setToken(null)
       })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const connect = () => {
     setError(null)
-    tokenClientRef.current?.requestAccessToken({ prompt: 'select_account' })
+    const params = new URLSearchParams({
+      client_id:     CLIENT_ID,
+      redirect_uri:  getRedirectUri(),
+      response_type: 'token',
+      scope:         SCOPE,
+      prompt:        'select_account',
+      state:         STATE_KEY,
+    })
+    window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`
   }
 
   const loadThreadList = async (accessToken: string) => {
     setListLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({
-        maxResults: '30',
-        q:          'in:inbox',
-      })
+      const params = new URLSearchParams({ maxResults: '30', q: 'in:inbox' })
       const res = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/threads?${params}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -149,14 +133,13 @@ export default function GmailPicker({ onThreadsChange }: Props) {
         if (res.status === 401) {
           localStorage.removeItem('gmail_token')
           setToken(null)
-          tokenClientRef.current?.requestAccessToken({ prompt: 'select_account' })
+          connect()
         }
         throw new Error(`Gmail API ${res.status}`)
       }
       const data = await res.json()
       const rawThreads = data.threads ?? []
 
-      // Fetch snippet + subject for each thread (lightweight)
       const enriched: GmailThread[] = await Promise.all(
         rawThreads.slice(0, 20).map(async (t: { id: string }) => {
           try {
@@ -261,7 +244,7 @@ export default function GmailPicker({ onThreadsChange }: Props) {
       setSelected(next)
       onThreadsChange(Array.from(next.values()))
     } catch (e: unknown) {
-      setError((e as Error).message ?? `Failed to load thread`)
+      setError((e as Error).message ?? 'Failed to load thread')
     } finally {
       setFetchingId(null)
     }
@@ -285,8 +268,7 @@ export default function GmailPicker({ onThreadsChange }: Props) {
         <button
           type="button"
           onClick={connect}
-          disabled={!gisReady}
-          className="flex items-center gap-2 border border-arc-border rounded-lg px-4 py-2.5 font-mono text-xs text-arc-sub hover:border-arc-green hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed w-fit"
+          className="flex items-center gap-2 border border-arc-border rounded-lg px-4 py-2.5 font-mono text-xs text-arc-sub hover:border-arc-green hover:text-white transition-colors w-fit"
         >
           <GmailIcon />
           Connect Gmail
@@ -299,7 +281,6 @@ export default function GmailPicker({ onThreadsChange }: Props) {
   // ── Connected ─────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-3">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <GmailIcon className="text-arc-green" />
@@ -320,7 +301,6 @@ export default function GmailPicker({ onThreadsChange }: Props) {
         </button>
       </div>
 
-      {/* Thread list */}
       <div className="border border-arc-border rounded-lg overflow-hidden">
         {listLoading ? (
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">Loading threads…</div>
@@ -328,7 +308,6 @@ export default function GmailPicker({ onThreadsChange }: Props) {
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">No threads found</div>
         ) : (
           <>
-            {/* Select all row */}
             <label className="flex items-center gap-3 px-4 py-2 bg-arc-surface border-b border-arc-border cursor-pointer hover:bg-black/20 transition-colors">
               <input
                 type="checkbox"
@@ -342,41 +321,40 @@ export default function GmailPicker({ onThreadsChange }: Props) {
               </span>
               {selectingAll && <span className="font-mono text-[10px] text-arc-amber animate-pulse">Reading all…</span>}
             </label>
-          <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
-            {threads.map(thread => {
-              const isSelected  = selected.has(thread.id)
-              const isFetching  = fetchingId === thread.id
-              const isDisabled  = selectingAll || isFetching || (!!fetchingId && !isSelected)
+            <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
+              {threads.map(thread => {
+                const isSelected  = selected.has(thread.id)
+                const isFetching  = fetchingId === thread.id
+                const isDisabled  = selectingAll || isFetching || (!!fetchingId && !isSelected)
 
-              return (
-                <label
-                  key={thread.id}
-                  className={`flex items-start gap-3 px-4 py-2.5 transition-colors ${
-                    isDisabled ? 'cursor-wait opacity-60' : 'cursor-pointer'
-                  } ${isSelected ? 'bg-arc-green/5' : 'hover:bg-arc-surface'}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    disabled={isDisabled}
-                    onChange={() => !isDisabled && toggleThread(thread)}
-                    className="accent-arc-green flex-shrink-0 mt-0.5"
-                  />
-                  <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-                    <span className="font-mono text-[11px] text-white truncate">{thread.subject}</span>
-                    <span className="font-mono text-[10px] text-arc-muted truncate">{thread.snippet}</span>
-                  </div>
-                  {isFetching  && <span className="font-mono text-[10px] text-arc-amber flex-shrink-0 animate-pulse">Reading…</span>}
-                  {isSelected && !isFetching && <span className="font-mono text-[10px] text-arc-green flex-shrink-0">✓</span>}
-                </label>
-              )
-            })}
-          </div>
+                return (
+                  <label
+                    key={thread.id}
+                    className={`flex items-start gap-3 px-4 py-2.5 transition-colors ${
+                      isDisabled ? 'cursor-wait opacity-60' : 'cursor-pointer'
+                    } ${isSelected ? 'bg-arc-green/5' : 'hover:bg-arc-surface'}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      disabled={isDisabled}
+                      onChange={() => !isDisabled && toggleThread(thread)}
+                      className="accent-arc-green flex-shrink-0 mt-0.5"
+                    />
+                    <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <span className="font-mono text-[11px] text-white truncate">{thread.subject}</span>
+                      <span className="font-mono text-[10px] text-arc-muted truncate">{thread.snippet}</span>
+                    </div>
+                    {isFetching  && <span className="font-mono text-[10px] text-arc-amber flex-shrink-0 animate-pulse">Reading…</span>}
+                    {isSelected && !isFetching && <span className="font-mono text-[10px] text-arc-green flex-shrink-0">✓</span>}
+                  </label>
+                )
+              })}
+            </div>
           </>
         )}
       </div>
 
-      {/* Selected chips */}
       {selected.size > 0 && (
         <div className="flex flex-wrap gap-2">
           {Array.from(selected.entries()).map(([id, t]) => (
