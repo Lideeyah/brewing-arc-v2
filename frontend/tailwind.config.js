@@ -11,8 +11,8 @@ export default {
           bg:     '#000000',
           surface:'#09090b',
           border: '#18181b',
-          muted:  '#3f3f46',
-          sub:    '#71717a',
+          muted:  '#71717a',
+          sub:    '#a1a1aa',
         },
       },
       fontFamily: {

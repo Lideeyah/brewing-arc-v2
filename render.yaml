@@ -2,6 +2,8 @@ services:
   - type: web
     name: brewing-arc-api
     runtime: python
+    region: oregon
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -25,3 +27,7 @@ services:
         sync: false
       - key: USDC_ADDRESS
         value: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"
+      - key: ESCROW_CONTRACT_ADDRESS
+        value: "0xB1c9Efa7F199E50e05B4f25C80297582d966515e"
+      - key: FRONTEND_URL
+        value: "https://frontend-lideeyahs-projects.vercel.app"

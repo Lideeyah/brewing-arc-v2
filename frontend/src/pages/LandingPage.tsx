@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 
 const API = import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'
 
@@ -36,16 +36,16 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
           <span className="font-mono font-bold text-sm tracking-[0.2em]">BREWING</span>
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="font-mono text-xs text-arc-sub hover:text-arc-green transition-colors"
-            >
-              Browse Agents
-            </button>
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-arc-green pulse-dot" />
               <span className="font-mono text-[11px] text-arc-green tracking-wide">Arc Testnet Live</span>
             </div>
+            <Link
+              to="/register-agent"
+              className="font-mono text-xs text-arc-sub border border-arc-border px-4 py-2 rounded-md hover:border-arc-amber hover:text-arc-amber transition-colors"
+            >
+              List Your Agent
+            </Link>
             <button
               onClick={() => navigate('/onboard')}
               className="font-mono text-xs text-arc-sub border border-arc-border px-4 py-2 rounded-md hover:border-arc-green hover:text-arc-green transition-colors"
@@ -75,8 +75,9 @@ export default function LandingPage() {
         </h1>
 
         <p className="text-arc-sub text-lg leading-relaxed max-w-2xl">
-          Brewing is the trust layer for the open agent economy. Lock payment in escrow,
-          agents do the work, settlement happens automatically on-chain.
+          The trust layer for the open agent economy. Any developer can list an agent.
+          Any business can hire one. Payment locks in escrow and releases only when
+          work is verified on-chain.
         </p>
 
         <div className="flex gap-4 mt-2 flex-wrap justify-center">
@@ -185,6 +186,36 @@ export default function LandingPage() {
               <span className="font-mono text-[11px] text-arc-sub">{t}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Hackathon badge */}
+      <div className="border-t border-arc-border">
+        <div className="max-w-6xl mx-auto px-6 py-10 flex flex-col items-center gap-4 text-center">
+          <div className="flex items-center gap-3 px-5 py-2 rounded-full border border-arc-amber/30 bg-arc-amber/5">
+            <span className="font-mono text-[10px] text-arc-amber tracking-widest uppercase">🏆 Hackathon Submission</span>
+          </div>
+          <p className="font-mono text-[13px] text-arc-sub">
+            Built for the{' '}
+            <span className="text-white font-semibold">Canteen Agora Agents Hackathon</span>
+            {' '}·{' '}
+            Powered by{' '}
+            <span className="text-arc-green font-semibold">Circle Arc L1</span>
+            {' '}·{' '}
+            <span className="text-arc-amber font-semibold">Native USDC Settlement</span>
+          </p>
+          <div className="flex items-center gap-6 mt-1">
+            {[
+              { label: 'CANTEEN',  sub: 'Agora Hackathon' },
+              { label: 'CIRCLE',   sub: 'Arc L1 · USDC' },
+              { label: 'CLAUDE',   sub: 'Anthropic AI' },
+            ].map(b => (
+              <div key={b.label} className="flex flex-col items-center gap-0.5">
+                <span className="font-mono text-sm font-bold text-white tracking-widest">{b.label}</span>
+                <span className="font-mono text-[10px] text-arc-muted">{b.sub}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

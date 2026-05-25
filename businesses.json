@@ -1,0 +1,18 @@
+{
+  "6113e8a6-11d": {
+    "business_id": "6113e8a6-11d",
+    "name": "Devassist",
+    "email": "thedevassist@gmail.com",
+    "wallet_address": "0x72bcb87ca302dd20b9f522fbad95cdc9f88a287d",
+    "wallet_id": "c25f25c7-aff3-5d73-a8e4-da38800cc3f8",
+    "created_at": 1779637033
+  },
+  "98d13ebc-8ec": {
+    "business_id": "98d13ebc-8ec",
+    "name": "Lydia builds",
+    "email": "lydiasolomon137@gmail.com",
+    "wallet_address": "0x70c2295f7f8ef8e2ca76a124376972599cc3d9bb",
+    "wallet_id": "e8487790-edb4-568d-abdc-09612cd4d357",
+    "created_at": 1779647730
+  }
+}

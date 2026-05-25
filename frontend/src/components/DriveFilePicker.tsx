@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
-const SCOPE     = 'https://www.googleapis.com/auth/drive.readonly'
+const SCOPE     = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,13 +61,14 @@ function isSupported(mimeType: string) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DriveFilePicker({ onFilesChange }: Props) {
-  const [gisReady,    setGisReady]    = useState(false)
-  const [token,       setToken]       = useState<string | null>(null)
-  const [files,       setFiles]       = useState<DriveFile[]>([])
-  const [selected,    setSelected]    = useState<SelectedFile[]>([])
-  const [fetchingId,  setFetchingId]  = useState<string | null>(null)
-  const [listLoading, setListLoading] = useState(false)
-  const [error,       setError]       = useState<string | null>(null)
+  const [gisReady,     setGisReady]    = useState(false)
+  const [token,        setToken]       = useState<string | null>(() => localStorage.getItem('drive_token'))
+  const [files,        setFiles]       = useState<DriveFile[]>([])
+  const [selected,     setSelected]    = useState<SelectedFile[]>([])
+  const [fetchingId,   setFetchingId]  = useState<string | null>(null)
+  const [listLoading,  setListLoading] = useState(false)
+  const [selectingAll, setSelectingAll] = useState(false)
+  const [error,        setError]       = useState<string | null>(null)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tokenClientRef = useRef<{ requestAccessToken: (o?: { prompt?: string }) => void } | null>(null)
@@ -75,7 +76,10 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
   // Load Google Identity Services script once
   useEffect(() => {
     if (!CLIENT_ID) return
-    if (document.getElementById('gsi-script')) { setGisReady(true); return }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((window as any).google?.accounts) { setGisReady(true); return }
+    const existing = document.getElementById('gsi-script')
+    if (existing) { existing.addEventListener('load', () => setGisReady(true)); return }
     const s = document.createElement('script')
     s.id    = 'gsi-script'
     s.src   = 'https://accounts.google.com/gsi/client'
@@ -97,11 +101,25 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
           setError('Sign-in cancelled or failed')
           return
         }
+        localStorage.setItem('drive_token', resp.access_token)
+        localStorage.setItem('drive_scopes', SCOPE)
         setToken(resp.access_token)
         await loadFileList(resp.access_token)
       },
     })
   }, [gisReady])
+
+  // Auto-load files when token is restored from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('drive_token')
+    if (saved && files.length === 0) {
+      loadFileList(saved).catch(() => {
+        localStorage.removeItem('drive_token')
+        setToken(null)
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const connect = () => {
     setError(null)
@@ -121,7 +139,14 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
       const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
-      if (!res.ok) throw new Error(`Drive API ${res.status}`)
+      if (!res.ok) {
+        if (res.status === 401) {
+          localStorage.removeItem('drive_token')
+          setToken(null)
+          tokenClientRef.current?.requestAccessToken({ prompt: '' })
+        }
+        throw new Error(`Drive API ${res.status}`)
+      }
       const data = await res.json()
       setFiles((data.files ?? []).filter((f: DriveFile) => isSupported(f.mimeType)))
     } catch (e: unknown) {
@@ -144,6 +169,39 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
     return text.length > CAP
       ? `${text.slice(0, CAP)}\n\n[File truncated — ${text.length.toLocaleString()} chars total]`
       : text
+  }
+
+  const allSelected = files.length > 0 && files.every(f => selected.some(s => s.id === f.id))
+
+  const toggleSelectAll = async () => {
+    if (allSelected) {
+      setSelected([])
+      onFilesChange([])
+      return
+    }
+    const unselected = files.filter(f => !selected.some(s => s.id === f.id))
+    setSelectingAll(true)
+    setError(null)
+    try {
+      const results = await Promise.all(
+        unselected.map(async f => {
+          try {
+            const content = await fetchContent(f, token!)
+            return { id: f.id, name: f.name, content }
+          } catch {
+            return null
+          }
+        })
+      )
+      const valid = results.filter(Boolean) as SelectedFile[]
+      const next  = [...selected, ...valid]
+      setSelected(next)
+      onFilesChange(next.map(s => ({ name: s.name, content: s.content })))
+    } catch (e: unknown) {
+      setError((e as Error).message ?? 'Failed to select all files')
+    } finally {
+      setSelectingAll(false)
+    }
   }
 
   const toggleFile = async (file: DriveFile) => {
@@ -230,11 +288,26 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
         ) : files.length === 0 ? (
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">No compatible files found</div>
         ) : (
+          <>
+            {/* Select all row */}
+            <label className="flex items-center gap-3 px-4 py-2 bg-arc-surface border-b border-arc-border cursor-pointer hover:bg-black/20 transition-colors">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                disabled={selectingAll || !!fetchingId}
+                onChange={toggleSelectAll}
+                className="accent-arc-green flex-shrink-0"
+              />
+              <span className="font-mono text-[10px] text-arc-sub flex-1">
+                {allSelected ? 'Deselect all' : 'Select all'}
+              </span>
+              {selectingAll && <span className="font-mono text-[10px] text-arc-amber animate-pulse">Reading all…</span>}
+            </label>
           <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
             {files.map(file => {
               const isSelected = selected.some(s => s.id === file.id)
               const isFetching = fetchingId === file.id
-              const isDisabled = isFetching || (!!fetchingId && !isSelected)
+              const isDisabled = selectingAll || isFetching || (!!fetchingId && !isSelected)
 
               return (
                 <label
@@ -260,6 +333,7 @@ export default function DriveFilePicker({ onFilesChange }: Props) {
               )
             })}
           </div>
+          </>
         )}
       </div>
 

@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import DriveFilePicker, { type DriveFilePayload } from '../components/DriveFilePicker'
 import GmailPicker, { type GmailThreadPayload } from '../components/GmailPicker'
+import SearchModal from '../components/SearchModal'
 
 const API      = import.meta.env.VITE_ARC_API_URL ?? 'http://localhost:8000'
 const EXPLORER = 'https://testnet.arcscan.app'
@@ -54,6 +57,176 @@ interface AgentCard {
   jobs_total:     number
   reputation:     number
   active:         boolean
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+
+function MarkdownResult({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        h1: ({ children }) => <h1 className="font-mono text-sm font-bold text-white mt-4 mb-2 border-b border-arc-border pb-1 first:mt-0">{children}</h1>,
+        h2: ({ children }) => <h2 className="font-mono text-xs font-bold text-arc-green mt-4 mb-2 first:mt-0">{children}</h2>,
+        h3: ({ children }) => <h3 className="font-mono text-[11px] font-semibold text-arc-sub mt-3 mb-1">{children}</h3>,
+        h4: ({ children }) => <h4 className="font-mono text-[11px] font-semibold text-arc-muted mt-2 mb-1">{children}</h4>,
+        p:  ({ children }) => <p  className="font-mono text-[11px] text-white leading-relaxed mb-2 last:mb-0">{children}</p>,
+        ul: ({ children }) => <ul className="font-mono text-[11px] space-y-0.5 mb-2 pl-0">{children}</ul>,
+        ol: ({ children }) => <ol className="font-mono text-[11px] space-y-0.5 mb-2 pl-4 list-decimal text-white">{children}</ol>,
+        li: ({ children }) => <li className="font-mono text-[11px] text-arc-sub flex gap-2"><span className="text-arc-muted flex-shrink-0">–</span><span>{children}</span></li>,
+        strong: ({ children }) => <strong className="text-arc-green font-semibold">{children}</strong>,
+        em: ({ children }) => <em className="text-arc-amber not-italic">{children}</em>,
+        code: ({ children }) => <code className="bg-black/40 text-arc-amber font-mono text-[10px] px-1.5 py-0.5 rounded border border-arc-border">{children}</code>,
+        pre: ({ children }) => <pre className="bg-black/40 border border-arc-border rounded-lg p-3 my-2 overflow-x-auto font-mono text-[10px] text-arc-sub">{children}</pre>,
+        blockquote: ({ children }) => <blockquote className="border-l-2 border-arc-green/40 pl-3 my-2 text-arc-sub italic">{children}</blockquote>,
+        hr: () => <hr className="border-arc-border my-3" />,
+        table: ({ children }) => (
+          <div className="overflow-x-auto my-3 rounded-lg border border-arc-border">
+            <table className="font-mono text-[10px] border-collapse w-full">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => <thead className="bg-arc-surface border-b border-arc-border">{children}</thead>,
+        tbody: ({ children }) => <tbody className="divide-y divide-arc-border/40">{children}</tbody>,
+        tr:    ({ children }) => <tr className="hover:bg-white/[0.02] transition-colors">{children}</tr>,
+        th:    ({ children }) => <th className="text-left py-2 px-3 text-arc-green font-semibold whitespace-nowrap">{children}</th>,
+        td:    ({ children }) => <td className="py-1.5 px-3 text-arc-sub align-top">{children}</td>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
+// ── Result export actions ─────────────────────────────────────────────────────
+
+function toPlainText(md: string): string {
+  return md
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/^#{1,6}[ \t]*/gm, '')
+    .replace(/\*\*\*(.+?)\*\*\*/gs, '$1')
+    .replace(/___(.+?)___/gs, '$1')
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/\*(.+?)\*/gs, '$1')
+    .replace(/~~(.+?)~~/gs, '$1')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^\s*[-*+][ \t]+/gm, '• ')
+    .replace(/^\s*\d+\.[ \t]+/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+    .replace(/^\|(.+)\|[ \t]*$/gm, (_m, cells: string) =>
+      cells.split('|').map((c: string) => c.trim()).filter(Boolean).join('  ')
+    )
+    .replace(/^[ \t]*[-|:][ \t|:-]+[ \t]*$/gm, '')
+    .replace(/^[ \t]*[-_*]{3,}[ \t]*$/gm, '─────')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function ResultActions({ content, taskId }: { content: string; taskId: string }) {
+  const [driveStatus, setDriveStatus] = useState<'idle' | 'saving' | 'saved' | 'reconnect'>('idle')
+
+  // Clear stale readonly-only token so user reconnects with drive.file scope
+  useEffect(() => {
+    const token = localStorage.getItem('drive_token')
+    const scopes = localStorage.getItem('drive_scopes') ?? ''
+    if (token && !scopes.includes('drive.file')) {
+      // Token predates write scope — wipe it so the picker re-prompts
+      localStorage.removeItem('drive_token')
+      localStorage.setItem('drive_scopes', '')
+    }
+  }, [])
+
+  const download = () => {
+    const blob = new Blob([toPlainText(content)], { type: 'text/plain' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `brewing-analysis-${taskId}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const saveToDrive = async () => {
+    const token = localStorage.getItem('drive_token')
+    if (!token) { setDriveStatus('reconnect'); return }
+    setDriveStatus('saving')
+    try {
+      const filename = `Brewing Analysis — ${new Date().toLocaleDateString('en-GB')}.txt`
+      const boundary = 'brewing_boundary_' + Math.random().toString(36).slice(2)
+      const body = [
+        `--${boundary}`,
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        JSON.stringify({ name: filename, mimeType: 'text/plain' }),
+        `--${boundary}`,
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        toPlainText(content),
+        `--${boundary}--`,
+      ].join('\r\n')
+
+      const res = await fetch(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        {
+          method:  'POST',
+          headers: {
+            Authorization:  `Bearer ${token}`,
+            'Content-Type': `multipart/related; boundary="${boundary}"`,
+          },
+          body,
+        }
+      )
+      if (res.ok) {
+        setDriveStatus('saved')
+      } else {
+        if (res.status === 401 || res.status === 403) localStorage.removeItem('drive_token')
+        setDriveStatus('reconnect')
+      }
+    } catch {
+      setDriveStatus('reconnect')
+    }
+  }
+
+  const openEmail = () => {
+    const subject = encodeURIComponent('Brewing AI Analysis')
+    const body    = encodeURIComponent(toPlainText(content).slice(0, 1800))
+    window.open(`mailto:?subject=${subject}&body=${body}`)
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap pt-1">
+      <span className="font-mono text-[10px] text-arc-muted">Export:</span>
+      <button
+        onClick={download}
+        className="flex items-center gap-1.5 font-mono text-[10px] text-arc-sub border border-arc-border rounded-lg px-3 py-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
+      >
+        ↓ Download .txt
+      </button>
+      <button
+        onClick={saveToDrive}
+        disabled={driveStatus === 'saving'}
+        title={driveStatus === 'reconnect' ? 'Reconnect Google Drive on the Post Task tab to enable saving' : ''}
+        className={`flex items-center gap-1.5 font-mono text-[10px] border rounded-lg px-3 py-1.5 transition-colors ${
+          driveStatus === 'saved'     ? 'text-arc-green border-arc-green/30 bg-arc-green/5' :
+          driveStatus === 'reconnect' ? 'text-arc-amber border-arc-amber/30' :
+          driveStatus === 'saving'    ? 'text-arc-muted border-arc-border cursor-wait' :
+          'text-arc-sub border-arc-border hover:border-arc-green hover:text-arc-green'
+        }`}
+      >
+        {driveStatus === 'saving'    ? '⟳ Saving…'          :
+         driveStatus === 'saved'     ? '✓ Saved to Drive'    :
+         driveStatus === 'reconnect' ? '↺ Reconnect Drive'   :
+                                       '↑ Save to Drive'}
+      </button>
+      <button
+        onClick={openEmail}
+        className="flex items-center gap-1.5 font-mono text-[10px] text-arc-sub border border-arc-border rounded-lg px-3 py-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
+      >
+        ✉ Send via Email
+      </button>
+    </div>
+  )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -341,6 +514,21 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
   const [driveFiles, setDriveFiles]   = useState<DriveFilePayload[]>([])
   const [gmailThreads, setGmailThreads] = useState<GmailThreadPayload[]>([])
   const [slackMessages, setSlackMessages] = useState<SlackMessagePayload[]>([])
+  const [searchOpen, setSearchOpen]   = useState(false)
+  const [modalDrive, setModalDrive]   = useState<DriveFilePayload[]>([])
+  const [modalGmail, setModalGmail]   = useState<GmailThreadPayload[]>([])
+
+  // Cmd+K / Ctrl+K opens search modal
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   const employerAddress = localStorage.getItem('brewing_employer_address') || ''
   const employerName    = localStorage.getItem('brewing_employer_name') || ''
@@ -354,6 +542,12 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
     if (!desc.trim() || submitting) return
     setSub(true); setError(''); setResult(null)
 
+    // Merge picker + modal selections, deduplicated by name/subject
+    const pickerDriveNames = new Set(driveFiles.map(f => f.name))
+    const allDriveFiles    = [...driveFiles, ...modalDrive.filter(f => !pickerDriveNames.has(f.name))]
+    const pickerGmailSubjects = new Set(gmailThreads.map(t => t.subject))
+    const allGmailThreads  = [...gmailThreads, ...modalGmail.filter(t => !pickerGmailSubjects.has(t.subject))]
+
     try {
       const res = await fetch(`${API}/api/tasks`, {
         method:  'POST',
@@ -364,8 +558,8 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
           deadline_hours:   parseInt(deadline) || 24,
           employer_address: employerAddress,
           employer_name:    employerName,
-          drive_files:      driveFiles,
-          gmail_threads:    gmailThreads,
+          drive_files:      allDriveFiles,
+          gmail_threads:    allGmailThreads,
           slack_messages:   slackMessages,
         }),
         signal: AbortSignal.timeout(180_000),
@@ -388,7 +582,7 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
   const lockedUsdc = (parseFloat(budget) || 0.10).toFixed(3)
 
   return (
-    <div className="flex flex-col gap-6 max-w-2xl">
+    <div className="flex flex-col gap-6">
       <div>
         <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase mb-1">POST A TASK</div>
         <p className="font-mono text-[12px] text-arc-sub">
@@ -415,9 +609,22 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
 
         {/* Integrations */}
         <div className="flex flex-col gap-3">
-          <label className="font-mono text-[10px] text-arc-muted tracking-widest uppercase">
-            Data Sources <span className="text-arc-muted normal-case tracking-normal">(optional — agents will read from connected sources)</span>
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="font-mono text-[10px] text-arc-muted tracking-widest uppercase">
+              Data Sources <span className="text-arc-muted normal-case tracking-normal">(optional — agents will read from connected sources)</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="flex items-center gap-1.5 font-mono text-[10px] text-arc-sub border border-arc-border rounded-lg px-3 py-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              Search
+              <kbd className="font-mono text-[9px] text-arc-muted border border-arc-border/60 rounded px-1 py-0.5">⌘K</kbd>
+            </button>
+          </div>
 
           {/* Google Drive */}
           <div className="flex flex-col gap-1">
@@ -436,6 +643,27 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
             <span className="font-mono text-[10px] text-arc-muted">Slack</span>
             <SlackConnect onMessagesChange={setSlackMessages} />
           </div>
+
+          {/* Modal selection summary */}
+          {(modalDrive.length > 0 || modalGmail.length > 0) && (
+            <div className="flex items-center gap-2 flex-wrap pt-1">
+              <span className="font-mono text-[10px] text-arc-muted">Via search:</span>
+              {modalDrive.map(f => (
+                <div key={f.name} className="flex items-center gap-1 border border-arc-green/20 rounded-full px-2.5 py-1 bg-arc-green/5">
+                  <span className="font-mono text-[9px] text-arc-muted uppercase">DOC</span>
+                  <span className="font-mono text-[10px] text-arc-green truncate max-w-[120px]">{f.name}</span>
+                  <button type="button" onClick={() => setModalDrive(d => d.filter(x => x.name !== f.name))} className="text-arc-muted hover:text-white font-mono text-[10px]">×</button>
+                </div>
+              ))}
+              {modalGmail.map(t => (
+                <div key={t.subject} className="flex items-center gap-1 border border-arc-amber/20 rounded-full px-2.5 py-1 bg-arc-amber/5">
+                  <span className="font-mono text-[9px] text-arc-amber uppercase">GMAIL</span>
+                  <span className="font-mono text-[10px] text-arc-amber truncate max-w-[120px]">{t.subject}</span>
+                  <button type="button" onClick={() => setModalGmail(g => g.filter(x => x.subject !== t.subject))} className="text-arc-muted hover:text-white font-mono text-[10px]">×</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Budget + Deadline */}
@@ -502,6 +730,12 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
         )}
       </form>
 
+      <SearchModal
+        isOpen={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelect={(drive, gmail) => { setModalDrive(drive); setModalGmail(gmail) }}
+      />
+
       {/* Result */}
       {result && result.status === 'completed' && (
         <div className="flex flex-col gap-4">
@@ -515,9 +749,10 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
               </div>
               <StatusBadge status={result.status} />
             </div>
-            <div className="font-mono text-[11px] text-white leading-relaxed bg-black/40 rounded-lg p-4 border border-arc-border">
-              {result.result}
+            <div className="bg-black/40 rounded-lg p-4 border border-arc-border">
+              <MarkdownResult content={result.result ?? ''} />
             </div>
+            <ResultActions content={result.result ?? ''} taskId={result.task_id} />
           </div>
           {result.subtasks.length > 0 && (
             <div className="flex flex-col gap-2">
@@ -531,7 +766,7 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
                       {st.settle_tx && <a href={`${EXPLORER}/tx/${st.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Settlement ↗</a>}
                     </div>
                   </div>
-                  <p className="font-mono text-[10px] text-arc-sub leading-relaxed">{st.result}</p>
+                  <div className="mt-1"><MarkdownResult content={st.result ?? ''} /></div>
                 </div>
               ))}
             </div>
@@ -545,15 +780,26 @@ function PostTaskTab({ preselectedAgent, onTaskPosted }: { preselectedAgent?: st
 // ── Tab 3: Active Jobs ────────────────────────────────────────────────────────
 
 function ActiveJobsTab() {
-  const [tasks, setTasks] = useState<TaskRecord[]>([])
-  const [loading, setLoad] = useState(true)
+  const [tasks,    setTasks]    = useState<TaskRecord[]>([])
+  const [loading,  setLoad]     = useState(true)
+  const [openIds,  setOpenIds]  = useState<Set<string>>(new Set())
+  const [firstLoad,setFirstLoad]= useState(true)
+  const myAddress = localStorage.getItem('brewing_employer_address') ?? ''
+
+  const toggle = (id: string) =>
+    setOpenIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
 
   const refresh = useCallback(async () => {
     try {
-      const data = await fetch(`${API}/api/tasks`).then(r => r.json())
-      setTasks(data as TaskRecord[])
+      const data: TaskRecord[] = await fetch(`${API}/api/tasks`).then(r => r.json())
+      const mine = myAddress ? data.filter(t => t.employer_address === myAddress) : data
+      setTasks(mine)
+      if (firstLoad && mine.length > 0) {
+        setOpenIds(new Set([mine[0].task_id]))
+        setFirstLoad(false)
+      }
     } catch { /* offline */ } finally { setLoad(false) }
-  }, [])
+  }, [myAddress, firstLoad])
 
   useEffect(() => {
     refresh()
@@ -570,97 +816,113 @@ function ActiveJobsTab() {
   )
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">
-        {tasks.length} TASK{tasks.length !== 1 ? 'S' : ''} TOTAL
+        {tasks.length} TASK{tasks.length !== 1 ? 'S' : ''} · click a row to expand
       </div>
-      {tasks.map(task => (
-        <div key={task.task_id} className="border border-arc-border rounded-xl bg-arc-surface overflow-hidden hover:border-arc-green/30 transition-colors">
-          {/* Header */}
-          <div className="border-b border-arc-border px-5 py-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="font-mono text-[10px] text-arc-muted flex-shrink-0">#{task.task_id}</span>
-              {task.subtasks.length > 0 && (
-                <span className="font-mono text-[10px] text-arc-sub">
-                  {task.subtasks.map(s => s.agent_name).join(' · ')}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-3 flex-shrink-0">
-              <span className="font-mono text-[11px] text-arc-amber font-bold">{task.budget_usdc.toFixed(3)} USDC</span>
-              <StatusBadge status={task.status} />
-            </div>
-          </div>
+      {tasks.map(task => {
+        const isOpen = openIds.has(task.task_id)
+        const snippet = task.description.length > 120
+          ? task.description.slice(0, 120) + '…'
+          : task.description
 
-          {/* Body */}
-          <div className="px-5 py-4 flex flex-col gap-3">
-            <p className="font-mono text-[12px] text-white leading-relaxed">{task.description}</p>
+        return (
+          <div key={task.task_id} className={`border rounded-xl bg-arc-surface overflow-hidden transition-colors ${
+            isOpen ? 'border-arc-green/30' : 'border-arc-border hover:border-arc-border/80'
+          }`}>
+            {/* Clickable header — always visible */}
+            <button
+              type="button"
+              onClick={() => toggle(task.task_id)}
+              className="w-full text-left px-5 py-3.5 flex items-center gap-3"
+            >
+              {/* Chevron */}
+              <span className={`font-mono text-arc-muted text-[10px] flex-shrink-0 transition-transform duration-150 ${isOpen ? 'rotate-90' : ''}`}>▶</span>
 
-            <div className="flex flex-wrap gap-4 font-mono text-[10px] text-arc-muted">
-              {task.status === 'in_progress' && (
-                <Countdown createdAt={task.created_at} deadlineHours={task.deadline_hours} />
-              )}
-              {task.completed_at && (
-                <span>Completed {new Date(task.completed_at * 1000).toLocaleTimeString()}</span>
-              )}
-            </div>
+              {/* Left: ID + agents + snippet */}
+              <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-mono text-[10px] text-arc-muted flex-shrink-0">#{task.task_id}</span>
+                  {(task.subtasks ?? []).length > 0 && (
+                    <span className="font-mono text-[10px] text-arc-sub truncate">
+                      {(task.subtasks ?? []).map(s => s.agent_name).join(' · ')}
+                    </span>
+                  )}
+                </div>
+                <span className="font-mono text-[11px] text-arc-sub truncate">{snippet}</span>
+              </div>
 
-            {/* Sub-tasks pipeline */}
-            {task.subtasks.length > 0 && (
-              <div className="flex flex-col gap-2 mt-1">
-                <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">AGENT PIPELINE</div>
-                {task.subtasks.map(st => (
-                  <div key={st.agent_name} className="border border-arc-border rounded-lg bg-black/40 p-3 flex flex-col gap-1.5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`font-mono text-[10px] ${
-                          st.status === 'completed' ? 'text-arc-green' :
-                          st.status === 'working'   ? 'text-arc-amber' : 'text-arc-muted'
-                        }`}>
-                          {st.status === 'completed' ? '✓' : st.status === 'working' ? '⟳' : '○'}
-                        </span>
-                        <span className="font-mono text-[11px] font-semibold text-white">{st.agent_name}</span>
-                        <StatusBadge status={st.status} />
+              {/* Right: amount + status + time */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {task.status === 'in_progress' && (
+                  <Countdown createdAt={task.created_at} deadlineHours={task.deadline_hours} />
+                )}
+                {task.completed_at && (
+                  <span className="font-mono text-[10px] text-arc-muted">
+                    {new Date(task.completed_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+                <span className="font-mono text-[11px] text-arc-amber font-bold">{task.budget_usdc.toFixed(3)} USDC</span>
+                <StatusBadge status={task.status} />
+              </div>
+            </button>
+
+            {/* Expandable body */}
+            {isOpen && (
+              <div className="border-t border-arc-border px-5 py-4 flex flex-col gap-4">
+                {/* Full description */}
+                <p className="font-mono text-[12px] text-white leading-relaxed">{task.description}</p>
+
+                {/* Agent pipeline */}
+                {(task.subtasks ?? []).length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">AGENT PIPELINE</div>
+                    {(task.subtasks ?? []).map(st => (
+                      <div key={st.agent_name} className="border border-arc-border rounded-lg bg-black/40 p-3 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className={`font-mono text-[10px] ${
+                              st.status === 'completed' ? 'text-arc-green' :
+                              st.status === 'working'   ? 'text-arc-amber' : 'text-arc-muted'
+                            }`}>
+                              {st.status === 'completed' ? '✓' : st.status === 'working' ? '⟳' : '○'}
+                            </span>
+                            <span className="font-mono text-[11px] font-semibold text-white">{st.agent_name}</span>
+                            <StatusBadge status={st.status} />
+                          </div>
+                          <div className="flex gap-3 font-mono text-[10px]">
+                            {st.create_tx && <a href={`${EXPLORER}/tx/${st.create_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Escrow ↗</a>}
+                            {st.settle_tx && <a href={`${EXPLORER}/tx/${st.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">Settlement ↗</a>}
+                          </div>
+                        </div>
+                        {st.result && <div className="mt-1"><MarkdownResult content={st.result} /></div>}
                       </div>
-                      <div className="flex gap-3 font-mono text-[10px]">
-                        {st.create_tx && (
-                          <a href={`${EXPLORER}/tx/${st.create_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
-                            Escrow ↗
-                          </a>
-                        )}
-                        {st.settle_tx && (
-                          <a href={`${EXPLORER}/tx/${st.settle_tx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
-                            Settlement ↗
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                    {st.result && (
-                      <p className="font-mono text-[10px] text-arc-sub leading-relaxed">{st.result}</p>
-                    )}
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            {/* Final result */}
-            {task.result && (
-              <div className="border border-arc-green/20 rounded-lg p-4 bg-arc-green/5 mt-1">
-                <div className="font-mono text-[9px] text-arc-green tracking-widest uppercase mb-2">COMBINED RESULT</div>
-                <p className="font-mono text-[11px] text-white leading-relaxed">{task.result}</p>
-              </div>
-            )}
+                {/* Combined result */}
+                {task.result && (
+                  <div className="border border-arc-green/20 rounded-lg p-4 bg-arc-green/5">
+                    <div className="font-mono text-[9px] text-arc-green tracking-widest uppercase mb-2">COMBINED RESULT</div>
+                    <MarkdownResult content={task.result} />
+                    <div className="mt-3 pt-3 border-t border-arc-border/50">
+                      <ResultActions content={task.result} taskId={task.task_id} />
+                    </div>
+                  </div>
+                )}
 
-            {/* Refunded state */}
-            {task.status === 'refunded' && (
-              <div className="border border-red-500/20 rounded-lg p-4 bg-red-500/5">
-                <div className="font-mono text-[9px] text-red-400 tracking-widest uppercase mb-1">SLASHED — REFUNDED</div>
-                <p className="font-mono text-[11px] text-arc-sub">Agent missed SLA deadline. {task.budget_usdc.toFixed(3)} USDC returned to employer.</p>
+                {task.status === 'refunded' && (
+                  <div className="border border-red-500/20 rounded-lg p-4 bg-red-500/5">
+                    <div className="font-mono text-[9px] text-red-400 tracking-widest uppercase mb-1">SLASHED — REFUNDED</div>
+                    <p className="font-mono text-[11px] text-arc-sub">Agent missed SLA deadline. {task.budget_usdc.toFixed(3)} USDC returned to employer.</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -668,30 +930,40 @@ function ActiveJobsTab() {
 // ── Tab 4: Receipts ───────────────────────────────────────────────────────────
 
 function ReceiptsTab() {
-  const [tasks, setTasks] = useState<TaskRecord[]>([])
-  const [loading, setLoad] = useState(true)
+  const [tasks,   setTasks]   = useState<TaskRecord[]>([])
+  const [loading, setLoad]    = useState(true)
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set())
+  const myAddress = localStorage.getItem('brewing_employer_address') ?? ''
 
   useEffect(() => {
     fetch(`${API}/api/tasks`)
       .then(r => r.json())
-      .then((d: TaskRecord[]) => setTasks(d.filter(t => t.status === 'completed')))
+      .then((d: TaskRecord[]) => {
+        const mine = myAddress ? d.filter(t => t.employer_address === myAddress) : d
+        const completed = mine.filter(t => t.status === 'completed')
+        setTasks(completed)
+        if (completed.length > 0) setOpenIds(new Set([completed[0].task_id]))
+      })
       .catch(() => null)
       .finally(() => setLoad(false))
-  }, [])
+  }, [myAddress])
+
+  const toggle = (id: string) =>
+    setOpenIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
 
   const download = (task: TaskRecord) => {
     const content = [
       `BREWING TASK RECEIPT`,
       `═══════════════════════════════`,
       `Task ID:      ${task.task_id}`,
-      `Agents:       ${task.subtasks.length > 0 ? task.subtasks.map(s => s.agent_name).join(', ') : '—'}`,
+      `Agents:       ${(task.subtasks ?? []).length > 0 ? (task.subtasks ?? []).map(s => s.agent_name).join(', ') : '—'}`,
       `Description:  ${task.description}`,
       `USDC Paid:    ${task.budget_usdc.toFixed(3)}`,
       `Completed:    ${task.completed_at ? new Date(task.completed_at * 1000).toISOString() : '—'}`,
       ``,
       `ON-CHAIN PROOF`,
       `──────────────`,
-      ...task.subtasks.map(st =>
+      ...(task.subtasks ?? []).map(st =>
         `${st.agent_name}:\n  escrow=${st.create_tx ? `${EXPLORER}/tx/${st.create_tx}` : '—'}\n  settle=${st.settle_tx ? `${EXPLORER}/tx/${st.settle_tx}` : '—'}`
       ),
       ``,
@@ -716,59 +988,89 @@ function ReceiptsTab() {
   )
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-start gap-4 flex-col">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
         <div className="font-mono text-[9px] text-arc-muted tracking-widest uppercase">
-          {tasks.length} COMPLETED TASK{tasks.length !== 1 ? 'S' : ''}
+          {tasks.length} COMPLETED TASK{tasks.length !== 1 ? 'S' : ''} · click to expand
         </div>
-        <p className="font-mono text-[12px] text-arc-sub">
-          Every completed job has a signed on-chain receipt. Downloadable proof of what was done, when, by whom, for how much.
-        </p>
+        <p className="font-mono text-[10px] text-arc-muted">On-chain proof · downloadable receipts</p>
       </div>
-      {tasks.map(task => (
-        <div key={task.task_id} className="border border-arc-border rounded-xl bg-arc-surface overflow-hidden">
-          <div className="border-b border-arc-border px-5 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-arc-green text-xs">✓</span>
-              <span className="font-mono text-[11px] text-white">
-                {task.subtasks.length > 0 ? task.subtasks.map(s => s.agent_name).join(' · ') : 'Agent'}
-              </span>
-              <span className="font-mono text-[10px] text-arc-muted">#{task.task_id}</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-[11px] text-arc-amber font-bold">{task.budget_usdc.toFixed(3)} USDC</span>
-              <button
-                onClick={() => download(task)}
-                className="font-mono text-[10px] text-arc-sub border border-arc-border rounded px-2 py-1 hover:border-arc-green hover:text-arc-green transition-colors"
-              >
-                ↓ Download Receipt
-              </button>
-            </div>
-          </div>
-          <div className="px-5 py-4 flex flex-col gap-3">
-            <p className="font-mono text-[11px] text-arc-sub">{task.description}</p>
-            <div className="flex flex-wrap gap-4 font-mono text-[10px] text-arc-muted">
-              {task.completed_at && <span>{new Date(task.completed_at * 1000).toLocaleString()}</span>}
-              <span>{task.subtasks.filter(s => s.status === 'completed').length}/{task.subtasks.length} agents settled on-chain</span>
-              {task.subtasks.find(s => s.settle_tx) && (
-                <a
-                  href={`${EXPLORER}/tx/${task.subtasks.find(s => s.settle_tx)!.settle_tx!}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-arc-green hover:underline"
-                >
-                  View on ArcScan ↗
-                </a>
-              )}
-            </div>
-            {task.result && (
-              <div className="border border-arc-border rounded-lg p-4 bg-black/40">
-                <p className="font-mono text-[11px] text-white leading-relaxed">{task.result}</p>
+      {tasks.map((task, i) => {
+        const isOpen  = openIds.has(task.task_id)
+        const snippet = task.description.length > 120 ? task.description.slice(0, 120) + '…' : task.description
+        const firstSettleTx = (task.subtasks ?? []).find(s => s.settle_tx)?.settle_tx
+
+        return (
+          <div key={task.task_id} className={`border rounded-xl bg-arc-surface overflow-hidden transition-colors ${
+            isOpen ? 'border-arc-green/30' : 'border-arc-border hover:border-arc-border/80'
+          }`}>
+            {/* Clickable header */}
+            <button
+              type="button"
+              onClick={() => toggle(task.task_id)}
+              className="w-full text-left px-5 py-3.5 flex items-center gap-3"
+            >
+              <span className="text-arc-green text-xs flex-shrink-0">✓</span>
+              <span className={`font-mono text-arc-muted text-[10px] flex-shrink-0 transition-transform duration-150 ${isOpen ? 'rotate-90' : ''}`}>▶</span>
+
+              <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-arc-muted flex-shrink-0">#{task.task_id}</span>
+                  <span className="font-mono text-[10px] text-arc-sub truncate">
+                    {(task.subtasks ?? []).length > 0 ? (task.subtasks ?? []).map(s => s.agent_name).join(' · ') : 'Agent'}
+                  </span>
+                  {i === 0 && <span className="font-mono text-[9px] text-arc-green border border-arc-green/30 rounded px-1.5 py-0.5 flex-shrink-0">Latest</span>}
+                </div>
+                <span className="font-mono text-[11px] text-arc-sub truncate">{snippet}</span>
+              </div>
+
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {task.completed_at && (
+                  <span className="font-mono text-[10px] text-arc-muted">
+                    {new Date(task.completed_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                    {' '}
+                    {new Date(task.completed_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+                <span className="font-mono text-[11px] text-arc-amber font-bold">{task.budget_usdc.toFixed(3)} USDC</span>
+              </div>
+            </button>
+
+            {/* Expandable body */}
+            {isOpen && (
+              <div className="border-t border-arc-border px-5 py-4 flex flex-col gap-4">
+                <p className="font-mono text-[11px] text-arc-sub leading-relaxed">{task.description}</p>
+
+                {/* On-chain proof row */}
+                <div className="flex flex-wrap items-center gap-4 font-mono text-[10px] text-arc-muted">
+                  <span>{(task.subtasks ?? []).filter(s => s.status === 'completed').length}/{(task.subtasks ?? []).length} agents settled on-chain</span>
+                  {firstSettleTx && (
+                    <a href={`${EXPLORER}/tx/${firstSettleTx}`} target="_blank" rel="noreferrer" className="text-arc-green hover:underline">
+                      View on ArcScan ↗
+                    </a>
+                  )}
+                  <button
+                    onClick={() => download(task)}
+                    className="text-arc-sub border border-arc-border rounded px-2 py-1 hover:border-arc-green hover:text-arc-green transition-colors"
+                  >
+                    ↓ Receipt
+                  </button>
+                </div>
+
+                {/* Result */}
+                {task.result && (
+                  <div className="border border-arc-border rounded-lg p-4 bg-black/40">
+                    <MarkdownResult content={task.result} />
+                    <div className="mt-3 pt-3 border-t border-arc-border/50">
+                      <ResultActions content={task.result} taskId={task.task_id} />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -783,7 +1085,16 @@ export default function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [preselectedAgent, setPreselectedAgent] = useState<string | undefined>()
 
-  const employerName = localStorage.getItem('brewing_employer_name') || ''
+  const employerName    = localStorage.getItem('brewing_employer_name')    || ''
+  const employerAddress = localStorage.getItem('brewing_employer_address') || ''
+  const addrShort       = employerAddress
+    ? `${employerAddress.slice(0, 6)}…${employerAddress.slice(-4)}`
+    : null
+
+  // Auth guard — redirect to onboard if no session
+  useEffect(() => {
+    if (!employerAddress) navigate('/onboard')
+  }, [employerAddress, navigate])
 
   const handleHire = (agentName: string) => {
     setPreselectedAgent(agentName)
@@ -820,11 +1131,16 @@ export default function Dashboard() {
               <span className="w-2 h-2 rounded-full bg-arc-green pulse-dot" />
               <span className="font-mono text-[11px] text-arc-green tracking-wide">Arc Testnet Live</span>
             </div>
+            {addrShort && (
+              <span className="font-mono text-[10px] text-arc-muted border border-arc-border/50 rounded px-2.5 py-1 select-all cursor-text">
+                {addrShort}
+              </span>
+            )}
             <button
               onClick={() => navigate('/onboard')}
               className="font-mono text-[10px] text-arc-sub border border-arc-border rounded px-3 py-1.5 hover:border-arc-green hover:text-arc-green transition-colors"
             >
-              + New Account
+              {employerAddress ? 'Switch Account' : 'Sign In'}
             </button>
           </div>
         </div>

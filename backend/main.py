@@ -92,6 +92,13 @@ class PostJobRequest(BaseModel):
     usdc_amount:     float
     timeout_seconds: int = 3600
 
+class RegisterAgentRequest(BaseModel):
+    name:           str
+    description:    str
+    capabilities:   list[str]
+    payment_addr:   str
+    price_per_task: float = 0.033
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -415,19 +422,21 @@ async def analytics():
 
 @app.get("/oauth/slack/callback")
 async def slack_oauth_callback(code: str = "", error: str = ""):
-    """Exchange Slack OAuth code for access token, redirect back to dashboard."""
+    """Exchange Slack OAuth code for access token, redirect back to the frontend dashboard."""
     import httpx
     from fastapi.responses import RedirectResponse
 
+    frontend = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
     if error or not code:
-        return RedirectResponse(url="/dashboard?slack_error=1")
+        return RedirectResponse(url=f"{frontend}/dashboard?slack_error=1")
 
     slack_client_id     = os.getenv("SLACK_CLIENT_ID", "")
     slack_client_secret = os.getenv("SLACK_CLIENT_SECRET", "")
     redirect_uri        = os.getenv("SLACK_REDIRECT_URI", "http://localhost:8000/oauth/slack/callback")
 
     if not slack_client_id or not slack_client_secret:
-        return RedirectResponse(url="/dashboard?slack_connected=1")  # no-creds fallback
+        return RedirectResponse(url=f"{frontend}/dashboard?slack_connected=1")
 
     try:
         async with httpx.AsyncClient() as hc:
@@ -439,12 +448,11 @@ async def slack_oauth_callback(code: str = "", error: str = ""):
             })
         data = resp.json()
         if not data.get("ok"):
-            return RedirectResponse(url="/dashboard?slack_error=1")
-        # Store token in env for this session (production: use DB/session store)
+            return RedirectResponse(url=f"{frontend}/dashboard?slack_error=1")
         os.environ["SLACK_BOT_TOKEN"] = data.get("access_token", "")
-        return RedirectResponse(url="/dashboard?slack_connected=1")
+        return RedirectResponse(url=f"{frontend}/dashboard?slack_connected=1")
     except Exception:
-        return RedirectResponse(url="/dashboard?slack_error=1")
+        return RedirectResponse(url=f"{frontend}/dashboard?slack_error=1")
 
 # ── Wallet ─────────────────────────────────────────────────────────────────────
 
@@ -464,6 +472,26 @@ async def get_wallet():
 @app.get("/api/agents")
 async def get_agents():
     return registry.to_dict()
+
+@app.post("/api/agents/register")
+async def register_agent(req: RegisterAgentRequest):
+    import hashlib
+    agent_id = hashlib.sha256(f"{req.payment_addr.lower()}:{req.name.lower()}".encode()).hexdigest()[:16]
+    existing = registry.get(agent_id)
+    if existing:
+        raise HTTPException(status_code=409, detail="An agent with this name and wallet already exists.")
+    card = registry.register(
+        name         = req.name,
+        owner        = req.payment_addr,
+        payment_addr = req.payment_addr,
+        capabilities = req.capabilities,
+        endpoint     = f"http://localhost:8000/agents/{agent_id}",
+    )
+    import dataclasses
+    d = dataclasses.asdict(card)
+    d["price_per_task"] = req.price_per_task
+    d["description"]    = req.description
+    return d
 
 # ── Jobs (raw on-chain) ────────────────────────────────────────────────────────
 

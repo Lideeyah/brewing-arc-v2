@@ -67,11 +67,12 @@ function getHeader(headers: Array<{ name: string; value: string }>, name: string
 
 export default function GmailPicker({ onThreadsChange }: Props) {
   const [gisReady,     setGisReady]     = useState(false)
-  const [token,        setToken]        = useState<string | null>(null)
+  const [token,        setToken]        = useState<string | null>(() => localStorage.getItem('gmail_token'))
   const [threads,      setThreads]      = useState<GmailThread[]>([])
   const [selected,     setSelected]     = useState<Map<string, GmailThreadPayload>>(new Map())
   const [fetchingId,   setFetchingId]   = useState<string | null>(null)
   const [listLoading,  setListLoading]  = useState(false)
+  const [selectingAll, setSelectingAll] = useState(false)
   const [error,        setError]        = useState<string | null>(null)
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +81,10 @@ export default function GmailPicker({ onThreadsChange }: Props) {
   // Load GIS script once
   useEffect(() => {
     if (!CLIENT_ID) return
-    if (document.getElementById('gsi-script')) { setGisReady(true); return }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((window as any).google?.accounts) { setGisReady(true); return }
+    const existing = document.getElementById('gsi-script')
+    if (existing) { existing.addEventListener('load', () => setGisReady(true)); return }
     const s = document.createElement('script')
     s.id    = 'gsi-script'
     s.src   = 'https://accounts.google.com/gsi/client'
@@ -102,11 +106,24 @@ export default function GmailPicker({ onThreadsChange }: Props) {
           setError('Sign-in cancelled or failed')
           return
         }
+        localStorage.setItem('gmail_token', resp.access_token)
         setToken(resp.access_token)
         await loadThreadList(resp.access_token)
       },
     })
   }, [gisReady])
+
+  // Auto-load threads when token is restored from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('gmail_token')
+    if (saved && threads.length === 0) {
+      loadThreadList(saved).catch(() => {
+        localStorage.removeItem('gmail_token')
+        setToken(null)
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const connect = () => {
     setError(null)
@@ -118,14 +135,21 @@ export default function GmailPicker({ onThreadsChange }: Props) {
     setError(null)
     try {
       const params = new URLSearchParams({
-        maxResults: '20',
-        q:          'in:inbox -category:promotions -category:social',
+        maxResults: '30',
+        q:          'in:inbox',
       })
       const res = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/threads?${params}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       )
-      if (!res.ok) throw new Error(`Gmail API ${res.status}`)
+      if (!res.ok) {
+        if (res.status === 401) {
+          localStorage.removeItem('gmail_token')
+          setToken(null)
+          tokenClientRef.current?.requestAccessToken({ prompt: '' })
+        }
+        throw new Error(`Gmail API ${res.status}`)
+      }
       const data = await res.json()
       const rawThreads = data.threads ?? []
 
@@ -179,6 +203,41 @@ export default function GmailPicker({ onThreadsChange }: Props) {
       return `From: ${from}\nDate: ${date}\n\n${trimmed}`
     })
     return parts.join('\n\n---\n\n')
+  }
+
+  const allSelected = threads.length > 0 && threads.every(t => selected.has(t.id))
+
+  const toggleSelectAll = async () => {
+    if (allSelected) {
+      setSelected(new Map())
+      onThreadsChange([])
+      return
+    }
+    const unselected = threads.filter(t => !selected.has(t.id))
+    setSelectingAll(true)
+    setError(null)
+    try {
+      const results = await Promise.all(
+        unselected.map(async t => {
+          try {
+            const content = await fetchThreadContent(t.id, token!)
+            return { id: t.id, payload: { subject: t.subject, content } }
+          } catch {
+            return null
+          }
+        })
+      )
+      const next = new Map(selected)
+      for (const r of results) {
+        if (r) next.set(r.id, r.payload)
+      }
+      setSelected(next)
+      onThreadsChange(Array.from(next.values()))
+    } catch (e: unknown) {
+      setError((e as Error).message ?? 'Failed to select all threads')
+    } finally {
+      setSelectingAll(false)
+    }
   }
 
   const toggleThread = async (thread: GmailThread) => {
@@ -265,11 +324,26 @@ export default function GmailPicker({ onThreadsChange }: Props) {
         ) : threads.length === 0 ? (
           <div className="px-4 py-6 text-center font-mono text-xs text-arc-muted">No threads found</div>
         ) : (
+          <>
+            {/* Select all row */}
+            <label className="flex items-center gap-3 px-4 py-2 bg-arc-surface border-b border-arc-border cursor-pointer hover:bg-black/20 transition-colors">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                disabled={selectingAll || !!fetchingId}
+                onChange={toggleSelectAll}
+                className="accent-arc-green flex-shrink-0"
+              />
+              <span className="font-mono text-[10px] text-arc-sub flex-1">
+                {allSelected ? 'Deselect all' : 'Select all'}
+              </span>
+              {selectingAll && <span className="font-mono text-[10px] text-arc-amber animate-pulse">Reading all…</span>}
+            </label>
           <div className="divide-y divide-arc-border max-h-52 overflow-y-auto">
             {threads.map(thread => {
               const isSelected  = selected.has(thread.id)
               const isFetching  = fetchingId === thread.id
-              const isDisabled  = isFetching || (!!fetchingId && !isSelected)
+              const isDisabled  = selectingAll || isFetching || (!!fetchingId && !isSelected)
 
               return (
                 <label
@@ -295,6 +369,7 @@ export default function GmailPicker({ onThreadsChange }: Props) {
               )
             })}
           </div>
+          </>
         )}
       </div>
 
